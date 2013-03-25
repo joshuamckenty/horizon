@@ -1,10 +1,7 @@
 import logging
 
-from django import shortcuts
-from django.contrib import messages
 from django.utils.translation import ugettext_lazy as _
 
-from horizon import api
 from horizon import tables
 
 
@@ -23,8 +20,12 @@ class QuotaFilterAction(tables.FilterAction):
         return filter(comp, tenants)
 
 
+def get_quota_name(quota):
+    return quota.name.replace("_", " ").title()
+
+
 class QuotasTable(tables.DataTable):
-    name = tables.Column('name', verbose_name=_('Quota Name'))
+    name = tables.Column(get_quota_name, verbose_name=_('Quota Name'))
     limit = tables.Column("limit", verbose_name=_('Limit'))
 
     def get_object_id(self, obj):

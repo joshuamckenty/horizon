@@ -21,6 +21,7 @@
 from django import http
 from django.core.urlresolvers import reverse
 from mox import IsA
+from copy import deepcopy
 
 from horizon import api
 from horizon import test
@@ -34,7 +35,10 @@ class AccessAndSecurityTests(test.TestCase):
         self.mox.StubOutWithMock(api, 'tenant_floating_ip_list')
         self.mox.StubOutWithMock(api, 'security_group_list')
         self.mox.StubOutWithMock(api.nova, 'keypair_list')
+        self.mox.StubOutWithMock(api.nova, 'server_list')
 
+        api.nova.server_list(IsA(http.HttpRequest),
+                             all_tenants=True).AndReturn(self.servers.list())
         api.nova.keypair_list(IsA(http.HttpRequest)).AndReturn(keypairs)
         api.tenant_floating_ip_list(IsA(http.HttpRequest)) \
                                     .AndReturn(floating_ips)
@@ -51,3 +55,38 @@ class AccessAndSecurityTests(test.TestCase):
                               sec_groups)
         self.assertItemsEqual(res.context['floating_ips_table'].data,
                               floating_ips)
+
+    def test_association(self):
+        servers = self.servers.list()
+
+        # Add duplicate instance name to test instance name with [IP]
+        # change id and private IP
+        server3 = api.nova.Server(self.servers.first(), self.request)
+        server3.id = 101
+        server3.addresses = deepcopy(server3.addresses)
+        server3.addresses['private'][0]['addr'] = "10.0.0.5"
+        self.servers.add(server3)
+
+        self.mox.StubOutWithMock(api.nova, 'tenant_floating_ip_list')
+        self.mox.StubOutWithMock(api.nova, 'server_list')
+        api.nova.tenant_floating_ip_list(IsA(http.HttpRequest)) \
+                .AndReturn(self.floating_ips.list())
+        api.nova.server_list(IsA(http.HttpRequest)).AndReturn(servers)
+        self.mox.ReplayAll()
+
+        res = self.client.get(reverse("horizon:nova:access_and_security:"
+                                      "floating_ips:associate"))
+        self.assertTemplateUsed(res,
+                        'nova/access_and_security/floating_ips/associate.html')
+
+        self.assertContains(res,
+                            '<option value="1">server_1 (1)</option>')
+        self.assertContains(res,
+                            '<option value="101">server_1 (101)</option>')
+        self.assertContains(res, '<option value="2">server_2 (2)</option>')
+
+
+class AccessAndSecurityQuantumTests(AccessAndSecurityTests):
+    def setUp(self):
+        super(AccessAndSecurityTests, self).setUp()
+        self.floating_ips = self.floating_ips_uuid

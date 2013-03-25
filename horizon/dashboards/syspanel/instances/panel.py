@@ -18,14 +18,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from django.utils.translation import ugettext_lazy as _
+
 import horizon
 from horizon.dashboards.syspanel import dashboard
 
 
 class Instances(horizon.Panel):
-    name = "Instances"
+    name = _("Instances")
     slug = 'instances'
-    roles = ('admin',)
+    permissions = ('openstack.roles.admin',)
 
 
 dashboard.Syspanel.register(Instances)

@@ -14,5 +14,32 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from django.utils.translation import ugettext_lazy as _
+
+from horizon import tables
 from horizon.dashboards.nova.images_and_snapshots.images.tables import (
-        ImagesTable, LaunchImage, EditImage, DeleteImage)
+        ImagesTable, EditImage, DeleteImage)
+
+
+class AdminDeleteImage(DeleteImage):
+    def allowed(self, request, image=None):
+        return True
+
+
+class AdminEditImage(EditImage):
+    url = "horizon:syspanel:images:update"
+
+    def allowed(self, request, image=None):
+        return True
+
+
+class AdminImagesTable(ImagesTable):
+    name = tables.Column("name",
+                         link="horizon:syspanel:images:detail",
+                         verbose_name=_("Image Name"))
+
+    class Meta:
+        name = "images"
+        verbose_name = _("Images")
+        table_actions = (AdminDeleteImage,)
+        row_actions = (AdminEditImage, AdminDeleteImage)

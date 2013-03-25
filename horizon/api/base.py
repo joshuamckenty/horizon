@@ -20,6 +20,8 @@
 
 import logging
 
+from django.conf import settings
+
 from horizon import exceptions
 
 
@@ -46,10 +48,11 @@ class APIResourceWrapper(object):
             # __getattr__ won't find properties
             return self._apiresource.__getattribute__(attr)
         else:
-            LOG.debug('Attempted to access unknown attribute "%s" on'
-                      ' APIResource object of type "%s" wrapping resource of'
-                      ' type "%s"' % (attr, self.__class__,
-                                      self._apiresource.__class__))
+            msg = ('Attempted to access unknown attribute "%s" on '
+                   'APIResource object of type "%s" wrapping resource of '
+                   'type "%s".') % (attr, self.__class__,
+                                    self._apiresource.__class__)
+            LOG.debug(exceptions.error_color(msg))
             raise AttributeError(attr)
 
 
@@ -72,7 +75,7 @@ class APIDictWrapper(object):
         except KeyError:
             msg = 'Unknown attribute "%(attr)s" on APIResource object ' \
                   'of type "%(cls)s"' % {'attr': attr, 'cls': self.__class__}
-            LOG.debug(msg)
+            LOG.debug(exceptions.error_color(msg))
             raise AttributeError(msg)
 
     def __getitem__(self, item):
@@ -97,7 +100,10 @@ def get_service_from_catalog(catalog, service_type):
     return None
 
 
-def url_for(request, service_type, admin=False, endpoint_type='internalURL'):
+def url_for(request, service_type, admin=False, endpoint_type=None):
+    endpoint_type = endpoint_type or getattr(settings,
+                                             'OPENSTACK_ENDPOINT_TYPE',
+                                             'publicURL')
     catalog = request.user.service_catalog
     service = get_service_from_catalog(catalog, service_type)
     if service:
@@ -110,3 +116,12 @@ def url_for(request, service_type, admin=False, endpoint_type='internalURL'):
             raise exceptions.ServiceCatalogException(service_type)
     else:
         raise exceptions.ServiceCatalogException(service_type)
+
+
+def is_service_enabled(request, service_type, service_name=None):
+    service = get_service_from_catalog(request.user.service_catalog,
+                                       service_type)
+    if service and service_name:
+        return service['name'] == service_name
+    else:
+        return service is not None

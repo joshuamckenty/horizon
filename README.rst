@@ -20,6 +20,22 @@ For issue tracking:
 
  * https://bugs.launchpad.net/horizon
 
+Dependencies
+============
+
+To get started you will need to install Node.js (http://nodejs.org/) on your
+machine. Node.js is used with Horizon in order to use LESS
+(http://lesscss.org/) for our CSS needs. Horizon is currently using Node.js
+v0.6.12.
+
+For Ubuntu use apt to install Node.js::
+
+    $ sudo apt-get install nodejs
+
+For other versions of Linux, please see here:: http://nodejs.org/#download for
+how to install Node.js on your system.
+
+
 Getting Started
 ===============
 
@@ -33,9 +49,9 @@ for you and then run the full test suite to verify everything is installed
 and functioning correctly.
 
 Now that the virtualenv is created, you need to configure your local
-environment.  To do this, create a ``local_settings.py`` file in the ``local/``
-directory.  There is a ``local_settings.py.example`` file there that may be
-used as a template.
+environment.  To do this, create a ``local_settings.py`` file in the
+``openstack_dashboard/local/`` directory.  There is a
+``local_settings.py.example`` file there that may be used as a template.
 
 If all is well you should able to run the development server locally:
 
@@ -54,6 +70,17 @@ components is `Devstack`_. Refer to their documentation for getting
 Nova, Keystone, Glance, etc. up and running.
 
 .. _Devstack: http://devstack.org/
+
+.. note::
+
+    The minimum required set of OpenStack services running includes the
+    following:
+
+    * Nova (compute, api, scheduler, network, *and* volume services)
+    * Glance
+    * Keystone
+
+    Optional support is provided for Swift.
 
 
 Development
@@ -79,7 +106,7 @@ Building Contributor Documentation
 
 This documentation is written by contributors, for contributors.
 
-The source is maintained in the ``docs/source`` folder using
+The source is maintained in the ``doc/source`` folder using
 `reStructuredText`_ and built by `Sphinx`_
 
 .. _reStructuredText: http://docutils.sourceforge.net/rst.html

@@ -1,89 +1,73 @@
 import logging
 
-from django import shortcuts
-from django.contrib import messages
-from django.utils.translation import ugettext as _
+from django.template import defaultfilters
+from django.utils.translation import ugettext_lazy as _
 
 from horizon import api
+from horizon import messages
 from horizon import tables
 
 
 LOG = logging.getLogger(__name__)
+
+ENABLE = 0
+DISABLE = 1
 
 
 class CreateUserLink(tables.LinkAction):
     name = "create"
     verbose_name = _("Create User")
     url = "horizon:syspanel:users:create"
-    classes = ("ajax-modal",)
+    classes = ("ajax-modal", "btn-create")
+
+    def allowed(self, request, user):
+        if api.keystone_can_edit_user():
+            return True
+        return False
 
 
 class EditUserLink(tables.LinkAction):
     name = "edit"
     verbose_name = _("Edit")
     url = "horizon:syspanel:users:update"
-    classes = ("ajax-modal",)
+    classes = ("ajax-modal", "btn-edit")
 
 
-class EnableUsersAction(tables.Action):
+class ToggleEnabled(tables.BatchAction):
     name = "enable"
-    verbose_name = _("Enable")
-    verbose_name_plural = _("Enable Users")
+    action_present = (_("Enable"), _("Disable"))
+    action_past = (_("Enabled"), _("Disabled"))
+    data_type_singular = _("User")
+    data_type_plural = _("Users")
+    classes = ("btn-enable",)
 
-    def allowed(self, request, user):
-        return not user.enabled
-
-    def handle(self, data_table, request, object_ids):
-        failures = 0
-        enabled = []
-        for obj_id in object_ids:
-            try:
-                api.keystone.user_update_enabled(request, obj_id, True)
-                enabled.append(obj_id)
-            except Exception, e:
-                failures += 1
-                messages.error(request, _("Error enabling user: %s") % e)
-                LOG.exception("Error enabling user.")
-        if failures:
-            messages.info(request, _("Enabled the following users: %s")
-                                     % ", ".join(enabled))
+    def allowed(self, request, user=None):
+        self.enabled = True
+        if not user:
+            return self.enabled
+        self.enabled = user.enabled
+        if self.enabled:
+            self.current_present_action = DISABLE
         else:
-            messages.success(request, _("Successfully enabled users: %s")
-                                        % ", ".join(enabled))
-        return shortcuts.redirect('horizon:syspanel:users:index')
+            self.current_present_action = ENABLE
+        return True
 
+    def update(self, request, user=None):
+        super(ToggleEnabled, self).update(request, user)
+        if user and user.id == request.user.id:
+            self.attrs["disabled"] = "disabled"
 
-class DisableUsersAction(tables.Action):
-    name = "disable"
-    verbose_name = _("Disable")
-    verbose_name_plural = _("Disable Users")
-
-    def allowed(self, request, user):
-        return user.enabled
-
-    def handle(self, data_table, request, object_ids):
-        failures = 0
-        disabled = []
-        for obj_id in object_ids:
-            if obj_id == request.user.id:
-                messages.info(request, _('You cannot disable the user you are '
-                                         'currently logged in as.'))
-                continue
-            try:
-                api.keystone.user_update_enabled(request, obj_id, False)
-                disabled.append(obj_id)
-            except Exception, e:
-                failures += 1
-                messages.error(request, _("Error disabling user: %s") % e)
-                LOG.exception("Error disabling user.")
-        if failures:
-            messages.info(request, _("Disabled the following users: %s")
-                                     % ", ".join(disabled))
+    def action(self, request, obj_id):
+        if obj_id == request.user.id:
+            messages.info(request, _('You cannot disable the user you are '
+                                     'currently logged in as.'))
+            return
+        if self.enabled:
+            api.keystone.user_update_enabled(request, obj_id, False)
+            self.current_past_action = DISABLE
         else:
-            if disabled:
-                messages.success(request, _("Successfully disabled users: %s")
-                                            % ", ".join(disabled))
-        return shortcuts.redirect('horizon:syspanel:users:index')
+            api.keystone.user_update_enabled(request, obj_id, True)
+            self.current_past_action = ENABLE
 
 
 class DeleteUsersAction(tables.DeleteAction):
@@ -91,7 +75,8 @@ class DeleteUsersAction(tables.DeleteAction):
     data_type_plural = _("Users")
 
     def allowed(self, request, datum):
-        if datum and datum.id == request.user.id:
+        if not api.keystone_can_edit_user() or \
+                (datum and datum.id == request.user.id):
             return False
         return True
 
@@ -106,7 +91,8 @@ class UserFilterAction(tables.FilterAction):
         q = filter_string.lower()
 
         def comp(user):
-            if q in user.name.lower() or q in user.email.lower():
+            if any([q in (user.name or "").lower(),
+                    q in (user.email or "").lower()]):
                 return True
             return False
 
@@ -118,19 +104,20 @@ class UsersTable(tables.DataTable):
         ("true", True),
         ("false", False)
     )
-    id = tables.Column(_('id'))
-    name = tables.Column(_('name'))
-    email = tables.Column(_('email'))
+    name = tables.Column('name', verbose_name=_('User Name'))
+    email = tables.Column('email', verbose_name=_('Email'),
+                          filters=[defaultfilters.urlize])
     # Default tenant is not returned from Keystone currently.
-    #default_tenant = tables.Column(_('default_tenant'),
-    #                               verbose_name="Default Project")
-    enabled = tables.Column(_('enabled'),
+    #default_tenant = tables.Column('default_tenant',
+    #                               verbose_name=_('Default Project'))
+    id = tables.Column('id', verbose_name=_('User ID'))
+    enabled = tables.Column('enabled', verbose_name=_('Enabled'),
                             status=True,
-                            status_choices=STATUS_CHOICES)
+                            status_choices=STATUS_CHOICES,
+                            empty_value="False")
 
     class Meta:
         name = "users"
         verbose_name = _("Users")
-        row_actions = (EditUserLink, EnableUsersAction, DisableUsersAction,
-                       DeleteUsersAction)
+        row_actions = (EditUserLink, ToggleEnabled, DeleteUsersAction)
         table_actions = (UserFilterAction, CreateUserLink, DeleteUsersAction)

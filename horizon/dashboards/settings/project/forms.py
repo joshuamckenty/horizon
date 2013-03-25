@@ -21,11 +21,11 @@
 import logging
 
 from django import shortcuts
-from django.contrib import messages
-from django.utils.translation import ugettext as _
+from django.utils.translation import ugettext_lazy as _
 
 from horizon import api
 from horizon import forms
+from horizon import messages
 
 
 LOG = logging.getLogger(__name__)
@@ -34,14 +34,8 @@ LOG = logging.getLogger(__name__)
 class DownloadOpenRCForm(forms.SelfHandlingForm):
     tenant = forms.ChoiceField(label=_("Select a Project"))
 
-    # forms.SelfHandlingForm doesn't pass request object as the first argument
-    # to the class __init__ method, which causes form to explode.
-    @classmethod
-    def _instantiate(cls, request, *args, **kwargs):
-        return cls(request, *args, **kwargs)
-
     def __init__(self, request, *args, **kwargs):
-        super(DownloadOpenRCForm, self).__init__(*args, **kwargs)
+        super(DownloadOpenRCForm, self).__init__(request, *args, **kwargs)
         # Populate tenant choices
         tenant_choices = []
         for tenant in api.tenant_list(request):
@@ -51,13 +45,17 @@ class DownloadOpenRCForm(forms.SelfHandlingForm):
 
     def handle(self, request, data):
         try:
+            tenant_id = data['tenant']
+            tenant_name = dict(self.fields['tenant'].choices)[tenant_id]
+
             keystone_url = api.url_for(request,
                                        'identity',
                                        endpoint_type='publicURL')
 
             context = {'user': request.user,
                        'auth_url': keystone_url,
-                       'tenant_id': data['tenant']}
+                       'tenant_id': tenant_id,
+                       'tenant_name': tenant_name}
 
             response = shortcuts.render(request,
                                         'settings/project/openrc.sh.template',

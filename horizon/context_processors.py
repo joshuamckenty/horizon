@@ -51,12 +51,15 @@ def horizon(request):
         for each template/template fragment which takes context that is used
         to render the complete output.
     """
-    context = {"True": True,
+    context = {"HORIZON_CONFIG": getattr(settings, "HORIZON_CONFIG", {}),
+               "True": True,
                "False": False}
 
     # Auth/Keystone context
     context.setdefault('authorized_tenants', [])
-    if request.user.is_authenticated():
+    current_dash = request.horizon['dashboard']
+    needs_tenants = getattr(current_dash, 'supports_tenants', False)
+    if request.user.is_authenticated() and needs_tenants:
         context['authorized_tenants'] = request.user.authorized_tenants
 
     # Region context/support

@@ -16,7 +16,7 @@
 
 import logging
 
-from django.utils.translation import ugettext as _
+from django.utils.translation import ugettext_lazy as _
 
 from horizon import api
 from horizon import tables
@@ -37,19 +37,19 @@ class ImportKeyPair(tables.LinkAction):
     name = "import"
     verbose_name = _("Import Keypair")
     url = "horizon:nova:access_and_security:keypairs:import"
-    attrs = {"class": "ajax-modal btn"}
+    classes = ("ajax-modal", "btn-upload")
 
 
 class CreateKeyPair(tables.LinkAction):
     name = "create"
     verbose_name = _("Create Keypair")
     url = "horizon:nova:access_and_security:keypairs:create"
-    attrs = {"class": "ajax-modal btn"}
+    classes = ("ajax-modal", "btn-create")
 
 
 class KeypairsTable(tables.DataTable):
-    name = tables.Column("name")
-    fingerprint = tables.Column("fingerprint")
+    name = tables.Column("name", verbose_name=_("Keypair Name"))
+    fingerprint = tables.Column("fingerprint", verbose_name=_("Fingerprint"))
 
     def get_object_id(self, keypair):
         return keypair.name

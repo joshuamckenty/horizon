@@ -20,12 +20,16 @@
 #    under the License.
 
 import logging
+import urlparse
 
 from django.conf import settings
+from django.utils.translation import ugettext_lazy as _
 
 from keystoneclient import service_catalog
 from keystoneclient.v2_0 import client as keystone_client
 from keystoneclient.v2_0 import tokens
+
+from openstack_auth.backend import KEYSTONE_CLIENT_ATTR
 
 from horizon.api import base
 from horizon import exceptions
@@ -33,6 +37,29 @@ from horizon import exceptions
 
 LOG = logging.getLogger(__name__)
 DEFAULT_ROLE = None
+
+
+class Service(base.APIDictWrapper):
+    """ Wrapper for a dict based on the service data from keystone. """
+    _attrs = ['id', 'type', 'name']
+
+    def __init__(self, service, *args, **kwargs):
+        super(Service, self).__init__(service, *args, **kwargs)
+        self.url = service['endpoints'][0]['internalURL']
+        self.host = urlparse.urlparse(self.url).hostname
+        self.region = service['endpoints'][0]['region']
+        self.disabled = None
+
+    def __unicode__(self):
+        if(self.type == "identity"):
+            return _("%(type)s (%(backend)s backend)") \
+                     % {"type": self.type,
+                        "backend": keystone_backend_name()}
+        else:
+            return self.type
+
+    def __repr__(self):
+        return "<Service: %s>" % unicode(self)
 
 
 def _get_endpoint_url(request, endpoint_type, catalog=None):
@@ -44,9 +71,7 @@ def _get_endpoint_url(request, endpoint_type, catalog=None):
                                getattr(settings, 'OPENSTACK_KEYSTONE_URL'))
 
 
-def keystoneclient(request, username=None, password=None, tenant_id=None,
-                   token_id=None, endpoint=None, endpoint_type='publicURL',
-                   admin=False):
+def keystoneclient(request, admin=False):
     """Returns a client connected to the Keystone backend.
 
     Several forms of authentication are supported:
@@ -70,47 +95,36 @@ def keystoneclient(request, username=None, password=None, tenant_id=None,
     """
     user = request.user
     if admin:
-        if not user.is_admin():
+        if not user.is_superuser:
             raise exceptions.NotAuthorized
         endpoint_type = 'adminURL'
+    else:
+        endpoint_type = getattr(settings,
+                                'OPENSTACK_ENDPOINT_TYPE',
+                                'internalURL')
 
     # Take care of client connection caching/fetching a new client.
     # Admin vs. non-admin clients are cached separately for token matching.
-    cache_attr = "_keystone_admin" if admin else "_keystone"
-    if hasattr(request, cache_attr) and (not token_id
-            or getattr(request, cache_attr).auth_token == token_id):
-        LOG.debug("Using cached client for token: %s" % user.token)
+    cache_attr = "_keystoneclient_admin" if admin else KEYSTONE_CLIENT_ATTR
+    if hasattr(request, cache_attr) and (not user.token.id
+            or getattr(request, cache_attr).auth_token == user.token.id):
+        LOG.debug("Using cached client for token: %s" % user.token.id)
         conn = getattr(request, cache_attr)
     else:
-        endpoint_lookup = _get_endpoint_url(request, endpoint_type)
-        auth_url = endpoint or endpoint_lookup
-        LOG.debug("Creating a new keystoneclient connection to %s." % auth_url)
-        conn = keystone_client.Client(username=username or user.username,
-                                      password=password,
-                                      tenant_id=tenant_id or user.tenant_id,
-                                      token=token_id or user.token,
-                                      auth_url=auth_url,
-                                      endpoint=endpoint)
+        endpoint = _get_endpoint_url(request, endpoint_type)
+        insecure = getattr(settings, 'OPENSTACK_SSL_NO_VERIFY', False)
+        LOG.debug("Creating a new keystoneclient connection to %s." % endpoint)
+        conn = keystone_client.Client(token=user.token.id,
+                                      endpoint=endpoint,
+                                      insecure=insecure)
         setattr(request, cache_attr, conn)
-
-    # Fetch the correct endpoint if we've re-scoped the token.
-    catalog = getattr(conn, 'service_catalog', None)
-    if catalog and "serviceCatalog" in catalog.catalog.keys():
-        catalog = catalog.catalog['serviceCatalog']
-    endpoint = _get_endpoint_url(request, endpoint_type, catalog)
-    conn.management_url = endpoint
-
     return conn
-
-
-def tenant_name(request, tenant_id):
-    return keystoneclient(request).tenants.get(tenant_id).name
 
 
 def tenant_create(request, tenant_name, description, enabled):
     return keystoneclient(request, admin=True).tenants.create(tenant_name,
-                                                  description,
-                                                  enabled)
+                                                              description,
+                                                              enabled)
 
 
 def tenant_get(request, tenant_id, admin=False):
@@ -132,32 +146,6 @@ def tenant_update(request, tenant_id, tenant_name, description, enabled):
                                                               enabled)
 
 
-def tenant_list_for_token(request, token, endpoint_type='publicURL'):
-    c = keystoneclient(request,
-                       token_id=token,
-                       endpoint=_get_endpoint_url(request, endpoint_type),
-                       endpoint_type=endpoint_type)
-    return c.tenants.list()
-
-
-def token_create(request, tenant, username, password):
-    '''
-    Creates a token using the username and password provided. If tenant
-    is provided it will retrieve a scoped token and the service catalog for
-    the given tenant. Otherwise it will return an unscoped token and without
-    a service catalog.
-    '''
-    c = keystoneclient(request,
-                       username=username,
-                       password=password,
-                       tenant_id=tenant,
-                       endpoint=_get_endpoint_url(request, 'publicURL'))
-    token = c.tokens.authenticate(username=username,
-                                  password=password,
-                                  tenant_id=tenant)
-    return token
-
-
 def token_create_scoped(request, tenant, token):
     '''
     Creates a scoped token using the tenant id and unscoped token; retrieves
@@ -165,20 +153,20 @@ def token_create_scoped(request, tenant, token):
     '''
     if hasattr(request, '_keystone'):
         del request._keystone
-    c = keystoneclient(request,
-                       tenant_id=tenant,
-                       token_id=token,
-                       endpoint=_get_endpoint_url(request, 'publicURL'))
+    c = keystoneclient(request)
     raw_token = c.tokens.authenticate(tenant_id=tenant,
                                       token=token,
                                       return_raw=True)
     c.service_catalog = service_catalog.ServiceCatalog(raw_token)
-    if request.user.is_admin():
+    if request.user.is_superuser:
         c.management_url = c.service_catalog.url_for(service_type='identity',
                                                      endpoint_type='adminURL')
     else:
-        c.management_url = c.service_catalog.url_for(service_type='identity',
-                                                     endpoint_type='publicURL')
+        endpoint_type = getattr(settings,
+                                'OPENSTACK_ENDPOINT_TYPE',
+                                'internalURL')
+        c.management_url = c.service_catalog.url_for(
+                service_type='identity', endpoint_type=endpoint_type)
     scoped_token = tokens.Token(tokens.TokenManager, raw_token)
     return scoped_token
 
@@ -227,11 +215,22 @@ def role_list(request):
     return keystoneclient(request, admin=True).roles.list()
 
 
+def roles_for_user(request, user, project):
+    return keystoneclient(request, admin=True).roles.roles_for_user(user,
+                                                                    project)
+
+
 def add_tenant_user_role(request, tenant_id, user_id, role_id):
     """ Adds a role for a user on a tenant. """
     return keystoneclient(request, admin=True).roles.add_user_role(user_id,
                                                                    role_id,
                                                                    tenant_id)
+
+
+def remove_tenant_user_role(request, tenant_id, user_id, role_id):
+    """ Removes a given single role for a user from a tenant. """
+    client = keystoneclient(request, admin=True)
+    client.roles.remove_user_role(user_id, role_id, tenant_id)
 
 
 def remove_tenant_user(request, tenant_id, user_id):
@@ -254,6 +253,7 @@ def get_default_role(request):
         try:
             roles = keystoneclient(request, admin=True).roles.list()
         except:
+            roles = []
             exceptions.handle(request)
         for role in roles:
             if role.id == default or role.name == default:
@@ -262,9 +262,27 @@ def get_default_role(request):
     return DEFAULT_ROLE
 
 
+def list_ec2_credentials(request, user_id):
+    return keystoneclient(request).ec2.list(user_id)
+
+
 def create_ec2_credentials(request, user_id, tenant_id):
     return keystoneclient(request).ec2.create(user_id, tenant_id)
 
 
 def get_user_ec2_credentials(request, user_id, access_token):
     return keystoneclient(request).ec2.get(user_id, access_token)
+
+
+def keystone_can_edit_user():
+    if hasattr(settings, "OPENSTACK_KEYSTONE_BACKEND"):
+        return settings.OPENSTACK_KEYSTONE_BACKEND['can_edit_user']
+    else:
+        return False
+
+
+def keystone_backend_name():
+    if hasattr(settings, "OPENSTACK_KEYSTONE_BACKEND"):
+        return settings.OPENSTACK_KEYSTONE_BACKEND['name']
+    else:
+        return 'unknown'

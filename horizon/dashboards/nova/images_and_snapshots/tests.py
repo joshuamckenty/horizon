@@ -21,7 +21,6 @@
 
 from django import http
 from django.core.urlresolvers import reverse
-from glance.common import exception as glance_exception
 from mox import IsA
 
 from horizon import api
@@ -32,13 +31,29 @@ INDEX_URL = reverse('horizon:nova:images_and_snapshots:index')
 
 
 class ImagesAndSnapshotsTests(test.TestCase):
+    @test.create_stubs({api: ('image_list_detailed', 'snapshot_list_detailed',
+                              'volume_snapshot_list', 'volume_get',)})
     def test_index(self):
         images = self.images.list()
         snapshots = self.snapshots.list()
-        self.mox.StubOutWithMock(api, 'image_list_detailed')
-        self.mox.StubOutWithMock(api, 'snapshot_list_detailed')
-        api.image_list_detailed(IsA(http.HttpRequest)).AndReturn(images)
-        api.snapshot_list_detailed(IsA(http.HttpRequest)).AndReturn(snapshots)
+        volumes = self.volumes.list()
+
+        for volume in volumes:
+            volume.volume_id = volume.id
+        for volume in volumes:
+            api.volume_get(IsA(http.HttpRequest), volume.volume_id) \
+                          .AndReturn(volume)
+        for volume in volumes:
+            api.volume_get(IsA(http.HttpRequest), volume.volume_id) \
+                          .AndReturn(volume)
+            api.volume_get(IsA(http.HttpRequest), volume.volume_id)
+
+        api.volume_snapshot_list(IsA(http.HttpRequest)) \
+                                .AndReturn(volumes)
+        api.image_list_detailed(IsA(http.HttpRequest),
+                                marker=None).AndReturn([images, False])
+        api.snapshot_list_detailed(IsA(http.HttpRequest),
+                                marker=None).AndReturn([snapshots, False])
         self.mox.ReplayAll()
 
         res = self.client.get(INDEX_URL)
@@ -49,25 +64,106 @@ class ImagesAndSnapshotsTests(test.TestCase):
         filtered_images = filter(filter_func, images)
         self.assertItemsEqual(images, filtered_images)
 
+    @test.create_stubs({api: ('image_list_detailed', 'snapshot_list_detailed',
+                              'volume_snapshot_list', 'volume_get',)})
     def test_index_no_images(self):
-        self.mox.StubOutWithMock(api, 'snapshot_list_detailed')
-        self.mox.StubOutWithMock(api, 'image_list_detailed')
-        api.image_list_detailed(IsA(http.HttpRequest)).AndReturn([])
-        api.snapshot_list_detailed(IsA(http.HttpRequest)) \
-                                   .AndReturn(self.snapshots.list())
+        volumes = self.volumes.list()
+
+        for volume in volumes:
+            volume.volume_id = volume.id
+        for volume in volumes:
+            api.volume_get(IsA(http.HttpRequest), volume.volume_id) \
+                          .AndReturn(volume)
+        for volume in volumes:
+            api.volume_get(IsA(http.HttpRequest), volume.volume_id) \
+                          .AndReturn(volume)
+            api.volume_get(IsA(http.HttpRequest), volume.volume_id)
+
+        api.volume_snapshot_list(IsA(http.HttpRequest)) \
+                                .AndReturn(volumes)
+        api.image_list_detailed(IsA(http.HttpRequest),
+                                marker=None).AndReturn([(), False])
+        api.snapshot_list_detailed(IsA(http.HttpRequest), marker=None) \
+                                .AndReturn([self.snapshots.list(), False])
         self.mox.ReplayAll()
 
         res = self.client.get(INDEX_URL)
         self.assertTemplateUsed(res, 'nova/images_and_snapshots/index.html')
 
-    def test_index_client_conn_error(self):
-        self.mox.StubOutWithMock(api, 'image_list_detailed')
-        self.mox.StubOutWithMock(api, 'snapshot_list_detailed')
-        exc = glance_exception.ClientConnectionError('clientConnError')
-        api.image_list_detailed(IsA(http.HttpRequest)).AndRaise(exc)
-        api.snapshot_list_detailed(IsA(http.HttpRequest)) \
-                                   .AndReturn(self.snapshots.list())
+    @test.create_stubs({api: ('image_list_detailed', 'snapshot_list_detailed',
+                              'volume_snapshot_list', 'volume_get',)})
+    def test_index_error(self):
+        volumes = self.volumes.list()
+
+        for volume in volumes:
+            volume.volume_id = volume.id
+        for volume in volumes:
+            api.volume_get(IsA(http.HttpRequest), volume.volume_id) \
+                          .AndReturn(volume)
+        for volume in volumes:
+            api.volume_get(IsA(http.HttpRequest), volume.volume_id) \
+                          .AndReturn(volume)
+            api.volume_get(IsA(http.HttpRequest), volume.volume_id)
+
+        api.volume_snapshot_list(IsA(http.HttpRequest)) \
+                                .AndReturn(volumes)
+        api.image_list_detailed(IsA(http.HttpRequest),
+                                marker=None).AndRaise(self.exceptions.glance)
+        api.snapshot_list_detailed(IsA(http.HttpRequest), marker=None) \
+                                .AndReturn([self.snapshots.list(), False])
         self.mox.ReplayAll()
 
         res = self.client.get(INDEX_URL)
         self.assertTemplateUsed(res, 'nova/images_and_snapshots/index.html')
+
+    @test.create_stubs({api: ('image_list_detailed', 'snapshot_list_detailed',
+                              'volume_snapshot_list', 'volume_get',)})
+    def test_queued_snapshot_actions(self):
+        images = self.images.list()
+        snapshots = self.snapshots.list()
+        volumes = self.volumes.list()
+
+        for volume in volumes:
+            volume.volume_id = volume.id
+        for volume in volumes:
+            api.volume_get(IsA(http.HttpRequest), volume.volume_id) \
+                          .AndReturn(volume)
+        for volume in volumes:
+            api.volume_get(IsA(http.HttpRequest), volume.volume_id) \
+                          .AndReturn(volume)
+            api.volume_get(IsA(http.HttpRequest), volume.volume_id)
+
+        api.volume_snapshot_list(IsA(http.HttpRequest)) \
+                                .AndReturn(volumes)
+        api.image_list_detailed(IsA(http.HttpRequest),
+                                marker=None).AndReturn([images, False])
+        api.snapshot_list_detailed(IsA(http.HttpRequest), marker=None) \
+                                .AndReturn([snapshots, False])
+        self.mox.ReplayAll()
+
+        res = self.client.get(INDEX_URL)
+        self.assertTemplateUsed(res, 'nova/images_and_snapshots/index.html')
+        self.assertIn('snapshots_table', res.context)
+        snaps = res.context['snapshots_table']
+        self.assertEqual(len(snaps.get_rows()), 3)
+
+        row_actions = snaps.get_row_actions(snaps.data[0])
+
+        # first instance - status active, owned
+        self.assertEqual(len(row_actions), 3)
+        self.assertEqual(row_actions[0].verbose_name, u"Launch")
+        self.assertEqual(row_actions[1].verbose_name, u"Edit")
+        self.assertEqual(row_actions[2].verbose_name, u"Delete Snapshot")
+
+        row_actions = snaps.get_row_actions(snaps.data[1])
+
+        # second instance - status active, not owned
+        self.assertEqual(len(row_actions), 1)
+        self.assertEqual(row_actions[0].verbose_name, u"Launch")
+
+        row_actions = snaps.get_row_actions(snaps.data[2])
+        # third instance - status queued, only delete is available
+        self.assertEqual(len(row_actions), 1)
+        self.assertEqual(unicode(row_actions[0].verbose_name),
+                         u"Delete Snapshot")
+        self.assertEqual(str(row_actions[0]), "<DeleteSnapshot: delete>")

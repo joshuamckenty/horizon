@@ -16,42 +16,30 @@
 
 from __future__ import absolute_import
 
-import copy
-
 from django import template
+from django.utils.datastructures import SortedDict
+from django.utils.translation import ugettext as _
 
 from horizon.base import Horizon
+from django.conf import settings
 
 
 register = template.Library()
 
 
 @register.filter
-def can_haz(user, component):
+def has_permissions(user, component):
     """
-    Checks if the given user meets the requirements for the component. This
-    includes both user roles and services in the service catalog.
+    Checks if the given user meets the permissions requirements for
+    the component.
     """
-    if hasattr(user, 'roles'):
-        user_roles = set([role['name'].lower() for role in user.roles])
-    else:
-        user_roles = set([])
-    roles_statisfied = set(getattr(component, 'roles', [])) <= user_roles
-
-    if hasattr(user, 'roles'):
-        services = set([service['type'] for service in user.service_catalog])
-    else:
-        services = set([])
-    services_statisfied = set(getattr(component, 'services', [])) <= services
-
-    if roles_statisfied and services_statisfied:
-        return True
-    return False
+    return user.has_perms(getattr(component, 'permissions', set()))
 
 
 @register.filter
-def can_haz_list(components, user):
-    return [component for component in components if can_haz(user, component)]
+def has_permissions_on_list(components, user):
+    return [component for component
+                in components if has_permissions(user, component)]
 
 
 @register.inclusion_tag('horizon/_nav_list.html', takes_context=True)
@@ -68,7 +56,8 @@ def horizon_main_nav(context):
             dashboards.append(dash)
     return {'components': dashboards,
             'user': context['request'].user,
-            'current': getattr(current_dashboard, 'slug', None)}
+            'current': current_dashboard,
+            'request': context['request']}
 
 
 @register.inclusion_tag('horizon/_subnav_list.html', takes_context=True)
@@ -77,23 +66,23 @@ def horizon_dashboard_nav(context):
     if 'request' not in context:
         return {}
     dashboard = context['request'].horizon['dashboard']
-    if isinstance(dashboard.panels, dict):
-        panels = copy.copy(dashboard.get_panels())
-    else:
-        panels = {dashboard.name: dashboard.get_panels()}
+    panel_groups = dashboard.get_panel_groups()
+    non_empty_groups = []
 
-    for heading, items in panels.iteritems():
-        temp_panels = []
-        for panel in items:
+    for group in panel_groups.values():
+        allowed_panels = []
+        for panel in group:
             if callable(panel.nav) and panel.nav(context):
-                temp_panels.append(panel)
+                allowed_panels.append(panel)
             elif not callable(panel.nav) and panel.nav:
-                temp_panels.append(panel)
-        panels[heading] = temp_panels
-    non_empty_panels = dict([(k, v) for k, v in panels.items() if len(v) > 0])
-    return {'components': non_empty_panels,
+                allowed_panels.append(panel)
+        if allowed_panels:
+            non_empty_groups.append((group.name, allowed_panels))
+
+    return {'components': SortedDict(non_empty_groups),
             'user': context['request'].user,
-            'current': context['request'].horizon['panel'].slug}
+            'current': context['request'].horizon['panel'].slug,
+            'request': context['request']}
 
 
 @register.inclusion_tag('horizon/common/_progress_bar.html')
@@ -114,6 +103,16 @@ def horizon_progress_bar(current_val, max_val):
             'max_val': max_val}
 
 
+@register.filter
+def quota(val, units=None):
+    if val == float("inf"):
+        return _("No Limit")
+    elif units is not None:
+        return "%s %s %s" % (val, units, _("Available"))
+    else:
+        return "%s %s" % (val, _("Available"))
+
+
 class JSTemplateNode(template.Node):
     """ Helper node for the ``jstemplate`` template tag. """
     def __init__(self, nodelist):
@@ -121,16 +120,24 @@ class JSTemplateNode(template.Node):
 
     def render(self, context, ):
         output = self.nodelist.render(context)
-        return output.replace('[[', '{{').replace(']]', '}}')
+        output = output.replace('[[', '{{').replace(']]', '}}')
+        output = output.replace('[%', '{%').replace('%]', '%}')
+        return output
 
 
 @register.tag
 def jstemplate(parser, token):
     """
-    Replaces ``[[`` and ``]]`` with ``{{`` and ``}}`` to avoid conflicts
+    Replaces ``[[`` and ``]]`` with ``{{`` and ``}}`` and
+    ``[%`` and ``%]`` with ``{%`` and ``%}`` to avoid conflicts
     with Django's template engine when using any of the Mustache-based
     templating libraries.
     """
     nodelist = parser.parse(('endjstemplate',))
     parser.delete_first_token()
     return JSTemplateNode(nodelist)
+
+
+@register.assignment_tag
+def load_config():
+    return getattr(settings, 'HORIZON_CONFIG', {})

@@ -21,89 +21,78 @@
 from __future__ import absolute_import
 
 import logging
+import thread
 import urlparse
 
-from glance import client as glance_client
+from django.conf import settings
 
-from horizon.api.base import APIDictWrapper, url_for
+import glanceclient as glance_client
+
+from horizon.api.base import url_for
 
 
 LOG = logging.getLogger(__name__)
 
 
-class Image(APIDictWrapper):
-    """
-    Wrapper around glance image dictionary to make it object-like and provide
-    access to image properties.
-    """
-    _attrs = ['checksum', 'container_format', 'created_at', 'deleted',
-             'deleted_at', 'disk_format', 'id', 'is_public', 'location',
-             'name', 'properties', 'size', 'status', 'updated_at', 'owner']
-
-    def __getattr__(self, attrname):
-        if attrname == "properties":
-            if not hasattr(self, "_properties"):
-                properties_dict = super(Image, self).__getattr__(attrname)
-                self._properties = ImageProperties(properties_dict)
-            return self._properties
-        else:
-            return super(Image, self).__getattr__(attrname)
-
-
-class ImageProperties(APIDictWrapper):
-    """
-    Wrapper around glance image properties dictionary to make it object-like.
-    """
-    _attrs = ['architecture', 'image_location', 'image_state', 'kernel_id',
-             'project_id', 'ramdisk_id', 'image_type']
-
-
 def glanceclient(request):
     o = urlparse.urlparse(url_for(request, 'image'))
-    LOG.debug('glanceclient connection created for host "%s:%d"' %
-                     (o.hostname, o.port))
-    return glance_client.Client(o.hostname,
-                                o.port,
-                                auth_tok=request.user.token)
-
-
-def image_create(request, image_meta, image_file):
-    return Image(glanceclient(request).add_image(image_meta, image_file))
+    url = "://".join((o.scheme, o.netloc))
+    insecure = getattr(settings, 'OPENSTACK_SSL_NO_VERIFY', False)
+    LOG.debug('glanceclient connection created using token "%s" and url "%s"'
+              % (request.user.token.id, url))
+    return glance_client.Client('1', url, token=request.user.token.id,
+                                insecure=insecure)
 
 
 def image_delete(request, image_id):
-    return glanceclient(request).delete_image(image_id)
+    return glanceclient(request).images.delete(image_id)
 
 
 def image_get(request, image_id):
     """
-    Returns the actual image file from Glance for image with
-    supplied identifier
-    """
-    return glanceclient(request).get_image(image_id)[1]
-
-
-def image_get_meta(request, image_id):
-    """
     Returns an Image object populated with metadata for image
     with supplied identifier.
     """
-    return Image(glanceclient(request).get_image_meta(image_id))
+    return glanceclient(request).images.get(image_id)
 
 
-def image_list_detailed(request):
-    return [Image(i) for i in glanceclient(request).get_images_detailed()]
+def image_list_detailed(request, marker=None, filters=None):
+    limit = getattr(settings, 'API_RESULT_LIMIT', 1000)
+    page_size = getattr(settings, 'API_RESULT_PAGE_SIZE', 20)
+    kwargs = {'filters': filters or {}}
+    if marker:
+        kwargs['marker'] = marker
+    images = list(glanceclient(request).images.list(page_size=page_size,
+                                                    limit=limit,
+                                                    **kwargs))
+    # Glance returns (page_size + 1) items if more items are available
+    if(len(images) > page_size):
+        return (images[0:-1], True)
+    else:
+        return (images, False)
 
 
-def image_update(request, image_id, image_meta=None):
-    image_meta = image_meta and image_meta or {}
-    return Image(glanceclient(request).update_image(image_id,
-                                                  image_meta=image_meta))
+def image_update(request, image_id, **kwargs):
+    return glanceclient(request).images.update(image_id, **kwargs)
 
 
-def snapshot_list_detailed(request):
-    filters = {}
-    filters['property-image_type'] = 'snapshot'
-    filters['is_public'] = 'none'
-    return [Image(i) for i in glanceclient(request)
-                             .get_images_detailed(filters=filters)]
+def image_create(request, **kwargs):
+    copy_from = None
+
+    if kwargs.get('copy_from'):
+        copy_from = kwargs.pop('copy_from')
+
+    image = glanceclient(request).images.create(**kwargs)
+
+    if copy_from:
+        thread.start_new_thread(image_update,
+                                (request, image.id),
+                                {'copy_from': copy_from})
+
+    return image
+
+
+def snapshot_list_detailed(request, marker=None, extra_filters=None):
+    filters = {'property-image_type': 'snapshot'}
+    filters.update(extra_filters or {})
+    return image_list_detailed(request, marker, filters)

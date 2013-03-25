@@ -18,7 +18,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from django.utils.translation import ugettext as _
+from django.utils.translation import ugettext_lazy as _
 
 import horizon
 from horizon.dashboards.nova import dashboard
@@ -27,6 +27,6 @@ from horizon.dashboards.nova import dashboard
 class Containers(horizon.Panel):
     name = _("Containers")
     slug = 'containers'
-    services = ('object-store',)
+    permissions = ('openstack.services.object-store',)
 
 dashboard.Nova.register(Containers)

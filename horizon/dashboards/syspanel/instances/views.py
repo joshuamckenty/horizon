@@ -22,15 +22,13 @@
 import logging
 
 from django.utils.datastructures import SortedDict
-from django.utils.translation import ugettext as _
+from django.utils.translation import ugettext_lazy as _
 
 from horizon import api
 from horizon import exceptions
 from horizon import tables
 from horizon.dashboards.syspanel.instances.tables import SyspanelInstancesTable
-from horizon.dashboards.nova.instances_and_volumes \
-     .instances.views import console, DetailView, vnc
-
+from horizon.dashboards.nova.instances.views import console, DetailView, vnc
 
 LOG = logging.getLogger(__name__)
 
@@ -47,20 +45,37 @@ class AdminIndexView(tables.DataTableView):
             exceptions.handle(self.request,
                               _('Unable to retrieve instance list.'))
         if instances:
+            # Gather our flavors to correlate against IDs
             try:
                 flavors = api.nova.flavor_list(self.request)
-                tenants = SortedDict([(str(tenant.id), tenant) for \
-                                      tenant in api.keystone.tenant_list(
-                                                    self.request, admin=True)])
-                full_flavors = SortedDict([(str(flavor.id), flavor) for \
-                                            flavor in flavors])
-                for inst in instances:
-                    inst.full_flavor = full_flavors[inst.flavor["id"]]
-                    inst.internal_identifier = "%s (%s)" % (inst.id,
-                                getattr(inst, 'OS-EXT-SRV-ATTR:instance_name'))
-                    inst.tenant_name = "%s (%s)" % (inst.tenant_id,
-                         tenants[inst.tenant_id].name)
             except:
-                msg = _('Unable to retrieve instance size information.')
+                # If fails to retrieve flavor list, creates an empty list.
+                flavors = []
+
+            # Gather our tenants to correlate against IDs
+            try:
+                tenants = api.keystone.tenant_list(self.request, admin=True)
+            except:
+                tenants = []
+                msg = _('Unable to retrieve instance tenant information.')
                 exceptions.handle(self.request, msg)
+
+            full_flavors = SortedDict([(f.id, f) for f in flavors])
+            tenant_dict = SortedDict([(t.id, t) for t in tenants])
+            # Loop through instances to get flavor and tenant info.
+            for inst in instances:
+                flavor_id = inst.flavor["id"]
+                try:
+                    if flavor_id in full_flavors:
+                        inst.full_flavor = full_flavors[flavor_id]
+                    else:
+                        # If the flavor_id is not in full_flavors list,
+                        # gets it via nova api.
+                        inst.full_flavor = api.nova.flavor_get(
+                                            self.request, flavor_id)
+                except:
+                    msg = _('Unable to retrieve instance size information.')
+                    exceptions.handle(self.request, msg)
+                tenant = tenant_dict.get(inst.tenant_id, None)
+                inst.tenant_name = getattr(tenant, "name", None)
         return instances

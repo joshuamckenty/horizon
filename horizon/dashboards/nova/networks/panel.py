@@ -1,10 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-# Copyright 2012 United States Government as represented by the
-# Administrator of the National Aeronautics and Space Administration.
-# All Rights Reserved.
-#
-# Copyright 2012 Nebula, Inc.
+# Copyright 2012 NEC Corporation
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -18,14 +14,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from django.utils.translation import ugettext_lazy as _
+
 import horizon
 from horizon.dashboards.nova import dashboard
 
 
 class Networks(horizon.Panel):
-    name = "Networks"
+    name = _("Networks")
     slug = 'networks'
-    services = ("network",)
-
+    permissions = ('openstack.services.network',)
 
 dashboard.Nova.register(Networks)

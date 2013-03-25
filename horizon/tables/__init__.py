@@ -16,6 +16,7 @@
 
 # Convenience imports for public API components.
 from .actions import (Action, BatchAction, DeleteAction,
-                      LinkAction, FilterAction, UpdateAction)
+                      LinkAction, FilterAction)
 from .base import DataTable, Column, Row
-from .views import DataTableView, MultiTableView
+from .views import DataTableView, MultiTableView, MultiTableMixin, \
+                    MixedDataTableView

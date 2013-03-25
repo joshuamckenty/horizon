@@ -18,12 +18,16 @@
 import logging
 
 from django import shortcuts
-from django.contrib import messages
-from django.utils.translation import ugettext as _
+from django.core import urlresolvers
+from django.utils.http import urlencode
+from django.utils.translation import ugettext_lazy as _
 
 from horizon import api
 from horizon import exceptions
+from horizon import messages
 from horizon import tables
+
+from .utils import get_int_or_uuid
 
 
 LOG = logging.getLogger(__name__)
@@ -32,7 +36,7 @@ LOG = logging.getLogger(__name__)
 class AllocateIP(tables.LinkAction):
     name = "allocate"
     verbose_name = _("Allocate IP To Project")
-    classes = ("ajax-modal",)
+    classes = ("ajax-modal", "btn-allocate")
     url = "horizon:nova:access_and_security:floating_ips:allocate"
 
     def single(self, data_table, request, *args):
@@ -45,6 +49,7 @@ class ReleaseIPs(tables.BatchAction):
     action_past = _("Released")
     data_type_singular = _("Floating IP")
     data_type_plural = _("Floating IPs")
+    classes = ('btn-danger', 'btn-release')
 
     def action(self, request, obj_id):
         api.tenant_floating_ip_release(request, obj_id)
@@ -52,19 +57,25 @@ class ReleaseIPs(tables.BatchAction):
 
 class AssociateIP(tables.LinkAction):
     name = "associate"
-    verbose_name = _("Associate IP")
+    verbose_name = _("Associate Floating IP")
     url = "horizon:nova:access_and_security:floating_ips:associate"
-    attrs = {"class": "ajax-modal"}
+    classes = ("ajax-modal", "btn-associate")
 
     def allowed(self, request, fip):
         if fip.instance_id:
             return False
         return True
 
+    def get_link_url(self, datum):
+        base_url = urlresolvers.reverse(self.url)
+        params = urlencode({"ip_id": self.table.get_object_id(datum)})
+        return "?".join([base_url, params])
+
 
 class DisassociateIP(tables.Action):
     name = "disassociate"
-    verbose_name = _("Disassociate IP")
+    verbose_name = _("Disassociate Floating IP")
+    classes = ("btn-disassociate", "btn-danger")
 
     def allowed(self, request, fip):
         if fip.instance_id:
@@ -73,21 +84,34 @@ class DisassociateIP(tables.Action):
 
     def single(self, table, request, obj_id):
         try:
-            fip = table.get_object_by_id(int(obj_id))
+            fip = table.get_object_by_id(get_int_or_uuid(obj_id))
             api.server_remove_floating_ip(request, fip.instance_id, fip.id)
             LOG.info('Disassociating Floating IP "%s".' % obj_id)
             messages.success(request,
                              _('Successfully disassociated Floating IP: %s')
-                             % obj_id)
+                             % fip.ip)
         except:
             exceptions.handle(request,
                               _('Unable to disassociate floating IP.'))
         return shortcuts.redirect('horizon:nova:access_and_security:index')
 
 
+def get_instance_info(instance):
+    return getattr(instance, "instance_name", None)
+
+
+def get_instance_link(datum):
+    view = "horizon:nova:instances:detail"
+    if datum.instance_id:
+        return urlresolvers.reverse(view, args=(datum.instance_id,))
+    else:
+        return None
+
+
 class FloatingIPsTable(tables.DataTable):
     ip = tables.Column("ip", verbose_name=_("IP Address"))
-    instance = tables.Column("instance_id",
+    instance = tables.Column(get_instance_info,
+                             link=get_instance_link,
                              verbose_name=_("Instance"),
                              empty_value="-")
     pool = tables.Column("pool",
@@ -95,7 +119,7 @@ class FloatingIPsTable(tables.DataTable):
                          empty_value="-")
 
     def sanitize_id(self, obj_id):
-        return int(obj_id)
+        return get_int_or_uuid(obj_id)
 
     def get_object_display(self, datum):
         return datum.ip

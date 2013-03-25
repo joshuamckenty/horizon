@@ -12,7 +12,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from datetime import timedelta
+
 from django.conf import settings
+from django.utils import datetime_safe
+
 from keystoneclient.v2_0 import users, tenants, tokens, roles, ec2
 
 from .utils import TestDataContainer
@@ -24,46 +28,60 @@ from .utils import TestDataContainer
 SERVICE_CATALOG = [
     {"type": "compute",
      "name": "nova",
+     "endpoints_links": [],
      "endpoints": [
         {"region": "RegionOne",
          "adminURL": "http://admin.nova.example.com:8774/v2",
-         "internalURL": "http://internal.nova.example.com:8774/v2",
+         "internalURL": "http://int.nova.example.com:8774/v2",
          "publicURL": "http://public.nova.example.com:8774/v2"}]},
     {"type": "volume",
      "name": "nova",
+     "endpoints_links": [],
      "endpoints": [
         {"region": "RegionOne",
          "adminURL": "http://admin.nova.example.com:8776/v1",
-         "internalURL": "http://internal.nova.example.com:8776/v1",
+         "internalURL": "http://int.nova.example.com:8776/v1",
          "publicURL": "http://public.nova.example.com:8776/v1"}]},
     {"type": "image",
      "name": "glance",
+     "endpoints_links": [],
      "endpoints": [
         {"region": "RegionOne",
          "adminURL": "http://admin.glance.example.com:9292/v1",
-         "internalURL": "http://internal.glance.example.com:9292/v1",
+         "internalURL": "http://int.glance.example.com:9292/v1",
          "publicURL": "http://public.glance.example.com:9292/v1"}]},
     {"type": "identity",
      "name": "keystone",
+     "endpoints_links": [],
      "endpoints": [
         {"region": "RegionOne",
          "adminURL": "http://admin.keystone.example.com:35357/v2.0",
-         "internalURL": "http://internal.keystone.example.com:5000/v2.0",
+         "internalURL": "http://int.keystone.example.com:5000/v2.0",
          "publicURL": "http://public.keystone.example.com:5000/v2.0"}]},
     {"type": "object-store",
      "name": "swift",
+     "endpoints_links": [],
      "endpoints": [
         {"region": "RegionOne",
          "adminURL": "http://admin.swift.example.com:8080/",
-         "internalURL": "http://internal.swift.example.com:8080/",
+         "internalURL": "http://int.swift.example.com:8080/",
          "publicURL": "http://public.swift.example.com:8080/"}]},
     {"type": "network",
      "name": "quantum",
+     "endpoints_links": [],
      "endpoints": [
         {"region": "RegionOne",
          "adminURL": "http://admin.quantum.example.com:9696/",
-         "internalURL": "http://internal.quantum.example.com:9696/",
+         "internalURL": "http://int.quantum.example.com:9696/",
          "publicURL": "http://public.quantum.example.com:9696/"}]},
+    {"type": "ec2",
+     "name": "EC2 Service",
+     "endpoints_links": [],
+     "endpoints": [
+        {"region": "RegionOne",
+         "adminURL": "http://admin.nova.example.com:8773/services/Admin",
+         "publicURL": "http://public.nova.example.com:8773/services/Cloud",
+         "internalURL": "http://int.nova.example.com:8773/services/Cloud"}]}
 ]
 
 
@@ -88,12 +106,14 @@ def data(TEST):
     user_dict = {'id': "1",
                  'name': 'test_user',
                  'email': 'test@example.com',
-                 'password': 'password'}
-    user = users.User(users.UserManager, user_dict)
+                 'password': 'password',
+                 'token': 'test_token',
+                 'enabled': True}
+    user = users.User(users.UserManager(None), user_dict)
     user_dict.update({'id': "2",
                       'name': 'user_two',
                       'email': 'two@example.com'})
-    user2 = users.User(users.UserManager, user_dict)
+    user2 = users.User(users.UserManager(None), user_dict)
     TEST.users.add(user, user2)
     TEST.user = user  # Your "current" user
     TEST.user.service_catalog = SERVICE_CATALOG
@@ -102,13 +122,21 @@ def data(TEST):
                    'name': 'test_tenant',
                    'description': "a test tenant.",
                    'enabled': True}
+    tenant_dict_2 = {'id': "2",
+                     'name': 'disabled_tenant',
+                     'description': "a disabled test tenant.",
+                     'enabled': False}
     tenant = tenants.Tenant(tenants.TenantManager, tenant_dict)
-    TEST.tenants.add(tenant)
+    disabled_tenant = tenants.Tenant(tenants.TenantManager, tenant_dict_2)
+    TEST.tenants.add(tenant, disabled_tenant)
     TEST.tenant = tenant  # Your "current" tenant
+
+    tomorrow = datetime_safe.datetime.now() + timedelta(days=1)
+    expiration = datetime_safe.datetime.isoformat(tomorrow)
 
     scoped_token = tokens.Token(tokens.TokenManager,
                                 dict(token={"id": "test_token_id",
-                                            "expires": "#FIXME",
+                                            "expires": expiration,
                                             "tenant": tenant_dict,
                                             "tenants": [tenant_dict]},
                                      user={"id": "test_user_id",
@@ -117,7 +145,7 @@ def data(TEST):
                                      serviceCatalog=TEST.service_catalog))
     unscoped_token = tokens.Token(tokens.TokenManager,
                                   dict(token={"id": "test_token_id",
-                                              "expires": "#FIXME"},
+                                              "expires": expiration},
                                        user={"id": "test_user_id",
                                              "name": "test_user",
                                              "roles": [member_role_dict]},

@@ -12,7 +12,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import json
+import uuid
+
+from horizon.openstack.common import jsonutils
 
 from novaclient.v1_1 import (flavors, keypairs, servers, volumes, quotas,
                              floating_ips, usage, certs,
@@ -27,6 +29,7 @@ SERVER_DATA = """
 {
     "server": {
         "OS-EXT-SRV-ATTR:instance_name": "instance-00000005",
+        "OS-EXT-SRV-ATTR:host": "instance-host",
         "OS-EXT-STS:task_state": null,
         "addresses": {
             "private": [
@@ -80,7 +83,9 @@ SERVER_DATA = """
         "name": "%(name)s",
         "created": "2012-02-28T19:51:17Z",
         "tenant_id": "%(tenant_id)s",
-        "metadata": {}
+        "metadata": {"someMetaLabel": "someMetaData",
+                     "some<b>html</b>label": "<!--",
+                     "empty": ""}
     }
 }
 """
@@ -137,29 +142,55 @@ def data(TEST):
     TEST.quotas = TestDataContainer()
     TEST.quota_usages = TestDataContainer()
     TEST.floating_ips = TestDataContainer()
+    TEST.floating_ips_uuid = TestDataContainer()
     TEST.usages = TestDataContainer()
     TEST.certs = TestDataContainer()
     TEST.volume_snapshots = TestDataContainer()
 
     # Volumes
-    volume = volumes.Volume(volumes.VolumeManager,
-                            dict(id="1",
+    volume = volumes.Volume(volumes.VolumeManager(None),
+                            dict(id="41023e92-8008-4c8b-8059-7f2293ff3775",
                                  name='test_volume',
                                  status='available',
                                  size=40,
-                                 displayName='',
-                                 attachments={}))
+                                 display_name='Volume name',
+                                 created_at='2012-04-01 10:30:00',
+                                 attachments=[]))
+    nameless_volume = volumes.Volume(volumes.VolumeManager(None),
+                         dict(id="3b189ac8-9166-ac7f-90c9-16c8bf9e01ac",
+                              name='',
+                              status='in-use',
+                              size=10,
+                              display_name='',
+                              display_description='',
+                              device="/dev/hda",
+                              created_at='2010-11-21 18:34:25',
+                              attachments=[{"id": "1", "server_id": '1',
+                                            "device": "/dev/hda"}]))
+    attached_volume = volumes.Volume(volumes.VolumeManager(None),
+                         dict(id="8cba67c1-2741-6c79-5ab6-9c2bf8c96ab0",
+                              name='my_volume',
+                              status='in-use',
+                              size=30,
+                              display_name='My Volume',
+                              display_description='',
+                              device="/dev/hdk",
+                              created_at='2011-05-01 11:54:33',
+                              attachments=[{"id": "2", "server_id": '1',
+                                            "device": "/dev/hdk"}]))
     TEST.volumes.add(volume)
+    TEST.volumes.add(nameless_volume)
+    TEST.volumes.add(attached_volume)
 
     # Flavors
-    flavor_1 = flavors.Flavor(flavors.FlavorManager,
+    flavor_1 = flavors.Flavor(flavors.FlavorManager(None),
                               {'id': "1",
                                'name': 'm1.tiny',
                                'vcpus': 1,
                                'disk': 0,
                                'ram': 512,
                                'OS-FLV-EXT-DATA:ephemeral': 0})
-    flavor_2 = flavors.Flavor(flavors.FlavorManager,
+    flavor_2 = flavors.Flavor(flavors.FlavorManager(None),
                               {'id': "2",
                                'name': 'm1.massive',
                                'vcpus': 1000,
@@ -169,18 +200,19 @@ def data(TEST):
     TEST.flavors.add(flavor_1, flavor_2)
 
     # Keypairs
-    keypair = keypairs.Keypair(keypairs.KeypairManager,
+    keypair = keypairs.Keypair(keypairs.KeypairManager(None),
                                dict(name='keyName'))
     TEST.keypairs.add(keypair)
 
     # Security Groups
-    sec_group_1 = sec_groups.SecurityGroup(sec_groups.SecurityGroupManager,
+    sg_manager = sec_groups.SecurityGroupManager(None)
+    sec_group_1 = sec_groups.SecurityGroup(sg_manager,
                                            {"rules": [],
                                             "tenant_id": TEST.tenant.id,
                                             "id": 1,
                                             "name": u"default",
                                             "description": u"default"})
-    sec_group_2 = sec_groups.SecurityGroup(sec_groups.SecurityGroupManager,
+    sec_group_2 = sec_groups.SecurityGroup(sg_manager,
                                            {"rules": [],
                                             "tenant_id": TEST.tenant.id,
                                             "id": 2,
@@ -193,8 +225,31 @@ def data(TEST):
             'to_port': u"80",
             'parent_group_id': 1,
             'ip_range': {'cidr': u"0.0.0.0/32"}}
-    rule_obj = rules.SecurityGroupRule(rules.SecurityGroupRuleManager, rule)
+
+    icmp_rule = {'id': 2,
+            'ip_protocol': u"icmp",
+            'from_port': u"9",
+            'to_port': u"5",
+            'parent_group_id': 1,
+            'ip_range': {'cidr': u"0.0.0.0/32"}}
+
+    group_rule = {'id': 3,
+            'ip_protocol': u"tcp",
+            'from_port': u"80",
+            'to_port': u"80",
+            'parent_group_id': 1,
+            'source_group_id': 1}
+
+    rule_obj = rules.SecurityGroupRule(rules.SecurityGroupRuleManager(None),
+                                       rule)
+    rule_obj2 = rules.SecurityGroupRule(rules.SecurityGroupRuleManager(None),
+                                       icmp_rule)
+    rule_obj3 = rules.SecurityGroupRule(rules.SecurityGroupRuleManager(None),
+                                        group_rule)
+
     TEST.security_group_rules.add(rule_obj)
+    TEST.security_group_rules.add(rule_obj2)
+    TEST.security_group_rules.add(rule_obj3)
 
     sec_group_1.rules = [rule_obj]
     sec_group_2.rules = [rule_obj]
@@ -212,7 +267,7 @@ def data(TEST):
                       instances='10',
                       injected_files='1',
                       cores='10')
-    quota = quotas.QuotaSet(quotas.QuotaSetManager, quota_data)
+    quota = quotas.QuotaSet(quotas.QuotaSetManager(None), quota_data)
     TEST.quotas.add(quota)
 
     # Quota Usages
@@ -239,13 +294,13 @@ def data(TEST):
             "flavor_id": flavor_1.id,
             "image_id": TEST.images.first().id,
             "key_name": keypair.name}
-    server_1 = servers.Server(servers.ServerManager,
-                              json.loads(SERVER_DATA % vals)['server'])
+    server_1 = servers.Server(servers.ServerManager(None),
+                              jsonutils.loads(SERVER_DATA % vals)['server'])
     vals.update({"name": "server_2",
                  "status": "BUILD",
                  "server_id": "2"})
-    server_2 = servers.Server(servers.ServerManager,
-                              json.loads(SERVER_DATA % vals)['server'])
+    server_2 = servers.Server(servers.ServerManager(None),
+                              jsonutils.loads(SERVER_DATA % vals)['server'])
     TEST.servers.add(server_1, server_2)
 
     # VNC Console Data
@@ -253,12 +308,30 @@ def data(TEST):
                             u'type': u'novnc'}}
     TEST.servers.console_data = console
     # Floating IPs
-    fip_1 = floating_ips.FloatingIP(floating_ips.FloatingIPManager,
+    fip_1 = floating_ips.FloatingIP(floating_ips.FloatingIPManager(None),
                                     {'id': 1,
                                      'fixed_ip': '10.0.0.4',
                                      'instance_id': server_1.id,
                                      'ip': '58.58.58.58'})
-    TEST.floating_ips.add(fip_1)
+    fip_2 = floating_ips.FloatingIP(floating_ips.FloatingIPManager(None),
+                                    {'id': 2,
+                                     'fixed_ip': None,
+                                     'instance_id': None,
+                                     'ip': '58.58.58.58'})
+    TEST.floating_ips.add(fip_1, fip_2)
+
+    # Floating IP with UUID id (for Floating IP with Quantum)
+    fip_3 = floating_ips.FloatingIP(floating_ips.FloatingIPManager(None),
+                                    {'id': str(uuid.uuid4()),
+                                     'fixed_ip': '10.0.0.4',
+                                     'instance_id': server_1.id,
+                                     'ip': '58.58.58.58'})
+    fip_4 = floating_ips.FloatingIP(floating_ips.FloatingIPManager(None),
+                                    {'id': str(uuid.uuid4()),
+                                     'fixed_ip': None,
+                                     'instance_id': None,
+                                     'ip': '58.58.58.58'})
+    TEST.floating_ips_uuid.add(fip_3, fip_4)
 
     # Usage
     usage_vals = {"tenant_id": TEST.tenant.id,
@@ -267,20 +340,20 @@ def data(TEST):
                   "flavor_vcpus": flavor_1.vcpus,
                   "flavor_disk": flavor_1.disk,
                   "flavor_ram": flavor_1.ram}
-    usage_obj = usage.Usage(usage.UsageManager,
-                            json.loads(USAGE_DATA % usage_vals))
+    usage_obj = usage.Usage(usage.UsageManager(None),
+                            jsonutils.loads(USAGE_DATA % usage_vals))
     TEST.usages.add(usage_obj)
 
-    volume_snapshot = vol_snaps.Snapshot(vol_snaps.SnapshotManager,
+    volume_snapshot = vol_snaps.Snapshot(vol_snaps.SnapshotManager(None),
                                          {'id': 2,
-                                          'displayName': 'test snapshot',
-                                          'displayDescription': 'vol snap!',
+                                          'display_name': 'test snapshot',
+                                          'display_description': 'vol snap!',
                                           'size': 40,
                                           'status': 'available',
-                                          'volumeId': 1})
+                                          'volume_id': 1})
     TEST.volume_snapshots.add(volume_snapshot)
 
     cert_data = {'private_key': 'private',
                  'data': 'certificate_data'}
-    certificate = certs.Certificate(certs.CertificateManager, cert_data)
+    certificate = certs.Certificate(certs.CertificateManager(None), cert_data)
     TEST.certs.add(certificate)

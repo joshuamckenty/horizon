@@ -1,10 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-# Copyright 2012 United States Government as represented by the
-# Administrator of the National Aeronautics and Space Administration.
-# All Rights Reserved.
-#
-# Copyright 2012 Nebula, Inc.
+# Copyright 2012 NEC Corporation
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -20,276 +16,784 @@
 
 from django import http
 from django.core.urlresolvers import reverse
-from mox import IsA
+from django.utils.http import urlencode
+from django.utils.html import escape
+from django.utils.datastructures import SortedDict
+from mox import IsA, IgnoreArg
+from copy import deepcopy
 
 from horizon import api
 from horizon import test
 
+from .workflows import CreateNetwork
 
-class NetworkViewTests(test.TestCase):
-    def setUp(self):
-        super(NetworkViewTests, self).setUp()
-        # TODO(gabriel): Move this to horizon.tests.test_data.quantum_data
-        #                after the wrapper classes are added for Quantum.
-        self.network = {}
-        self.network['networks'] = []
-        self.network['networks'].append({'id': 'n1'})
-        self.network_details = {'network': {'id': '1', 'name': 'test_network'}}
-        self.ports = {}
-        self.ports['ports'] = []
-        self.ports['ports'].append({'id': 'p1'})
-        self.port_details = {
-            'port': {
-                'id': 'p1',
-                'state': 'DOWN'}}
-        self.port_attachment = {
-            'attachment': {
-                'id': 'vif1'}}
-        self.vifs = [{'id': 'vif1'}]
 
-    def test_network_index(self):
-        self.mox.StubOutWithMock(api, 'quantum_list_networks')
-        api.quantum_list_networks(IsA(http.HttpRequest)).\
-                                            AndReturn(self.network)
+INDEX_URL = reverse('horizon:nova:networks:index')
 
-        self.mox.StubOutWithMock(api, 'quantum_network_details')
-        api.quantum_network_details(IsA(http.HttpRequest),
-                                    'n1').AndReturn(self.network_details)
 
-        self.mox.StubOutWithMock(api, 'quantum_list_ports')
-        api.quantum_list_ports(IsA(http.HttpRequest),
-                               'n1').AndReturn(self.ports)
-
-        self.mox.StubOutWithMock(api, 'quantum_port_attachment')
-        api.quantum_port_attachment(IsA(http.HttpRequest),
-                                    'n1', 'p1').AndReturn(self.port_attachment)
+class NetworkTests(test.TestCase):
+    @test.create_stubs({api.quantum: ('network_list',)})
+    def test_index(self):
+        api.quantum.network_list(
+            IsA(http.HttpRequest),
+            tenant_id=self.tenant.id,
+            shared=False).AndReturn(self.networks.list())
+        api.quantum.network_list(
+            IsA(http.HttpRequest),
+            shared=True).AndReturn([])
 
         self.mox.ReplayAll()
 
-        res = self.client.get(reverse('horizon:nova:networks:index'))
+        res = self.client.get(INDEX_URL)
 
         self.assertTemplateUsed(res, 'nova/networks/index.html')
-        networks = res.context['table'].data
+        networks = res.context['networks_table'].data
+        self.assertItemsEqual(networks, self.networks.list())
 
-        self.assertEqual(len(networks), 1)
-        self.assertEqual(networks[0]['name'], 'test_network')
-        self.assertEqual(networks[0]['id'], 'n1')
-        self.assertEqual(networks[0]['total'], 1)
-        self.assertEqual(networks[0]['used'], 1)
-        self.assertEqual(networks[0]['available'], 0)
-
-    def test_network_create(self):
-        self.mox.StubOutWithMock(api.quantum, "quantum_create_network")
-        api.quantum.quantum_create_network(IsA(http.HttpRequest),
-                                           IsA(dict)).AndReturn(True)
-
+    @test.create_stubs({api.quantum: ('network_list',)})
+    def test_index_network_list_exception(self):
+        api.quantum.network_list(
+            IsA(http.HttpRequest),
+            tenant_id=self.tenant.id,
+            shared=False).AndRaise(self.exceptions.quantum)
         self.mox.ReplayAll()
 
-        formData = {'name': 'Test',
-                    'method': 'CreateNetwork'}
+        res = self.client.get(INDEX_URL)
 
-        res = self.client.post(reverse('horizon:nova:networks:create'),
-                               formData)
+        self.assertTemplateUsed(res, 'nova/networks/index.html')
+        self.assertEqual(len(res.context['networks_table'].data), 0)
+        self.assertMessageCount(res, error=1)
 
-        self.assertRedirectsNoFollow(res,
-                                     reverse('horizon:nova:networks:index'))
-
-    def test_network_delete(self):
-        self.mox.StubOutWithMock(api, "quantum_delete_network")
-        api.quantum_delete_network(IsA(http.HttpRequest), 'n1').AndReturn(True)
-
-        self.mox.StubOutWithMock(api, 'quantum_list_networks')
-        api.quantum_list_networks(IsA(http.HttpRequest)).\
-                                            AndReturn(self.network)
-
-        self.mox.StubOutWithMock(api, 'quantum_network_details')
-        api.quantum_network_details(IsA(http.HttpRequest),
-                                    'n1').AndReturn(self.network_details)
-
-        self.mox.StubOutWithMock(api, 'quantum_list_ports')
-        api.quantum_list_ports(IsA(http.HttpRequest),
-                               'n1').AndReturn(self.ports)
-
-        self.mox.StubOutWithMock(api, 'quantum_port_attachment')
-        api.quantum_port_attachment(IsA(http.HttpRequest),
-                                    'n1', 'p1').AndReturn(self.port_attachment)
-
-        self.mox.ReplayAll()
-
-        formData = {'action': 'networks__delete__n1'}
-
-        self.client.post(reverse('horizon:nova:networks:index'), formData)
-
-    def test_network_rename(self):
-        self.mox.StubOutWithMock(api, 'quantum_network_details')
-        api.quantum_network_details(IsA(http.HttpRequest),
-                                    'n1').AndReturn(self.network_details)
-
-        self.mox.StubOutWithMock(api, 'quantum_update_network')
-        api.quantum_update_network(IsA(http.HttpRequest), 'n1',
-                                   {'network': {'name': "Test1"}})
-
-        self.mox.ReplayAll()
-
-        formData = {'network': 'n1',
-                    'new_name': 'Test1',
-                    'method': 'RenameNetwork'}
-
-        res = self.client.post(reverse('horizon:nova:networks:rename',
-                                       args=["n1"]),
-                               formData)
-
-        self.assertRedirectsNoFollow(res,
-                                     reverse('horizon:nova:networks:index'))
-
-    def test_network_details(self):
-        self.mox.StubOutWithMock(api, 'quantum_network_details')
-        api.quantum_network_details(IsA(http.HttpRequest),
-                                    'n1').AndReturn(self.network_details)
-
-        self.mox.StubOutWithMock(api, 'quantum_list_ports')
-        api.quantum_list_ports(IsA(http.HttpRequest),
-                               'n1').AndReturn(self.ports)
-
-        self.mox.StubOutWithMock(api, 'quantum_port_attachment')
-        api.quantum_port_attachment(IsA(http.HttpRequest),
-                                    'n1', 'p1').AndReturn(self.port_attachment)
-
-        self.mox.StubOutWithMock(api, 'quantum_port_details')
-        api.quantum_port_details(IsA(http.HttpRequest),
-                                 'n1', 'p1').AndReturn(self.port_details)
-
-        self.mox.StubOutWithMock(api, 'get_vif_ids')
-        api.get_vif_ids(IsA(http.HttpRequest)).AndReturn(self.vifs)
+    @test.create_stubs({api.quantum: ('network_get',
+                                      'subnet_list',
+                                      'port_list',)})
+    def test_network_detail(self):
+        network_id = self.networks.first().id
+        api.quantum.network_get(IsA(http.HttpRequest), network_id)\
+            .AndReturn(self.networks.first())
+        api.quantum.subnet_list(IsA(http.HttpRequest), network_id=network_id)\
+            .AndReturn([self.subnets.first()])
+        api.quantum.port_list(IsA(http.HttpRequest), network_id=network_id)\
+            .AndReturn([self.ports.first()])
+        api.quantum.network_get(IsA(http.HttpRequest), network_id)\
+            .AndReturn(self.networks.first())
 
         self.mox.ReplayAll()
 
         res = self.client.get(reverse('horizon:nova:networks:detail',
-                                      args=['n1']))
+                                      args=[network_id]))
 
         self.assertTemplateUsed(res, 'nova/networks/detail.html')
-        self.assertIn('network', res.context)
+        subnets = res.context['subnets_table'].data
+        ports = res.context['ports_table'].data
+        self.assertItemsEqual(subnets, [self.subnets.first()])
+        self.assertItemsEqual(ports, [self.ports.first()])
 
-        network = res.context['network']
+    @test.create_stubs({api.quantum: ('network_get',
+                                      'subnet_list',
+                                      'port_list',)})
+    def test_network_detail_network_exception(self):
+        network_id = self.networks.first().id
+        api.quantum.network_get(IsA(http.HttpRequest), network_id)\
+            .AndRaise(self.exceptions.quantum)
+        self.mox.ReplayAll()
 
-        self.assertEqual(network['name'], 'test_network')
-        self.assertEqual(network['id'], 'n1')
+        url = reverse('horizon:nova:networks:detail', args=[network_id])
+        res = self.client.get(url)
 
-    def test_port_create(self):
-        self.mox.StubOutWithMock(api, "quantum_network_details")
-        self.mox.StubOutWithMock(api, "quantum_create_port")
-        network_details = {'network': {'id': 'n1'}}
-        api.quantum_network_details(IsA(http.HttpRequest),
-                                    'n1').AndReturn(network_details)
-        api.quantum_create_port(IsA(http.HttpRequest), 'n1').AndReturn(True)
+        redir_url = INDEX_URL
+        self.assertRedirectsNoFollow(res, redir_url)
 
-        formData = {'ports_num': 1,
-                    'network': 'n1',
-                    'method': 'CreatePort'}
+    @test.create_stubs({api.quantum: ('network_get',
+                                      'subnet_list',
+                                      'port_list',)})
+    def test_network_detail_subnet_exception(self):
+        network_id = self.networks.first().id
+        api.quantum.network_get(IsA(http.HttpRequest), network_id).\
+            AndReturn(self.networks.first())
+        api.quantum.subnet_list(IsA(http.HttpRequest), network_id=network_id).\
+            AndRaise(self.exceptions.quantum)
+        api.quantum.port_list(IsA(http.HttpRequest), network_id=network_id).\
+            AndReturn([self.ports.first()])
+        # Called from SubnetTable
+        api.quantum.network_get(IsA(http.HttpRequest), network_id).\
+            AndReturn(self.networks.first())
 
         self.mox.ReplayAll()
 
-        res = self.client.post(reverse('horizon:nova:networks:port_create',
-                                       args=["n1"]),
-                               formData)
+        res = self.client.get(reverse('horizon:nova:networks:detail',
+                                      args=[network_id]))
 
-        self.assertRedirectsNoFollow(res,
-                                     reverse('horizon:nova:networks:detail',
-                                             args=["n1"]))
+        self.assertTemplateUsed(res, 'nova/networks/detail.html')
+        subnets = res.context['subnets_table'].data
+        ports = res.context['ports_table'].data
+        self.assertEqual(len(subnets), 0)
+        self.assertItemsEqual(ports, [self.ports.first()])
 
-    def test_port_delete(self):
-        self.mox.StubOutWithMock(api, 'quantum_network_details')
-        self.mox.StubOutWithMock(api, 'quantum_list_ports')
-        self.mox.StubOutWithMock(api, 'quantum_port_attachment')
-        self.mox.StubOutWithMock(api, 'quantum_port_details')
-        self.mox.StubOutWithMock(api, 'get_vif_ids')
-        self.mox.StubOutWithMock(api, "quantum_delete_port")
-        network_details = {'network': {'id': 'n1', 'name': 'network1'}}
-        api.quantum_network_details(IsA(http.HttpRequest),
-                                    'n1').AndReturn(network_details)
-
-        api.quantum_list_ports(IsA(http.HttpRequest),
-                               'n1').AndReturn(self.ports)
-
-        api.quantum_port_attachment(IsA(http.HttpRequest),
-                                    'n1', 'p1').AndReturn(self.port_attachment)
-
-        api.quantum_port_details(IsA(http.HttpRequest),
-                                 'n1', 'p1').AndReturn(self.port_details)
-
-        api.get_vif_ids(IsA(http.HttpRequest)).AndReturn(self.vifs)
-
-        api.quantum_delete_port(IsA(http.HttpRequest),
-                                'n1', 'p1').AndReturn(True)
-
-        formData = {'action': 'network_details__delete__p1'}
+    @test.create_stubs({api.quantum: ('network_get',
+                                      'subnet_list',
+                                      'port_list',)})
+    def test_network_detail_port_exception(self):
+        network_id = self.networks.first().id
+        api.quantum.network_get(IsA(http.HttpRequest), network_id).\
+            AndReturn(self.networks.first())
+        api.quantum.subnet_list(IsA(http.HttpRequest), network_id=network_id).\
+            AndReturn([self.subnets.first()])
+        api.quantum.port_list(IsA(http.HttpRequest), network_id=network_id).\
+            AndRaise(self.exceptions.quantum)
+        # Called from SubnetTable
+        api.quantum.network_get(IsA(http.HttpRequest), network_id).\
+            AndReturn(self.networks.first())
 
         self.mox.ReplayAll()
 
-        detail_url = reverse('horizon:nova:networks:detail', args=["n1"])
-        self.client.post(detail_url, formData)
+        res = self.client.get(reverse('horizon:nova:networks:detail',
+                                      args=[network_id]))
 
-    def test_port_attach(self):
-        self.mox.StubOutWithMock(api, "quantum_network_details")
-        self.mox.StubOutWithMock(api, "quantum_attach_port")
-        self.mox.StubOutWithMock(api, "get_vif_ids")
-        network_details = {'network': {'id': 'n1'}}
-        api.quantum_network_details(IsA(http.HttpRequest),
-                                    'n1').AndReturn(network_details)
-        api.quantum_attach_port(IsA(http.HttpRequest),
-                                'n1', 'p1', IsA(dict)).AndReturn(True)
-        api.get_vif_ids(IsA(http.HttpRequest)).AndReturn([{
-                'id': 'v1',
-                'instance_name': 'instance1',
-                'available': True}])
+        self.assertTemplateUsed(res, 'nova/networks/detail.html')
+        subnets = res.context['subnets_table'].data
+        ports = res.context['ports_table'].data
+        self.assertItemsEqual(subnets, [self.subnets.first()])
+        self.assertEqual(len(ports), 0)
 
-        formData = {'port': 'p1',
-                    'network': 'n1',
-                    'vif_id': 'v1',
-                    'method': 'AttachPort'}
+    def test_network_create_get(self):
+        # no api methods are called.
+        self.mox.ReplayAll()
+
+        url = reverse('horizon:nova:networks:create')
+        res = self.client.get(url)
+
+        workflow = res.context['workflow']
+        self.assertTemplateUsed(res, 'nova/networks/create.html')
+        self.assertEqual(workflow.name, CreateNetwork.name)
+        expected_objs = ['<CreateNetworkInfo: createnetworkinfoaction>',
+                         '<CreateSubnetInfo: createsubnetinfoaction>']
+        self.assertQuerysetEqual(workflow.steps, expected_objs)
+
+    @test.create_stubs({api.quantum: ('network_create',)})
+    def test_network_create_post(self):
+        network = self.networks.first()
+        api.quantum.network_create(IsA(http.HttpRequest), name=network.name)\
+            .AndReturn(network)
+        self.mox.ReplayAll()
+
+        form_data = {'net_name': network.name,
+                     'with_subnet': False,
+                     'subnet_name': '',
+                     'cidr': '',
+                     'ip_version': 4,
+                     'gateway_ip': ''}
+        url = reverse('horizon:nova:networks:create')
+        res = self.client.post(url, form_data)
+
+        self.assertNoFormErrors(res)
+        self.assertRedirectsNoFollow(res, INDEX_URL)
+
+    @test.create_stubs({api.quantum: ('network_create',
+                                      'subnet_create',)})
+    def test_network_create_post_with_subnet(self):
+        network = self.networks.first()
+        subnet = self.subnets.first()
+        api.quantum.network_create(IsA(http.HttpRequest), name=network.name)\
+            .AndReturn(network)
+        api.quantum.subnet_create(IsA(http.HttpRequest),
+                                  network_id=network.id,
+                                  name=subnet.name,
+                                  cidr=subnet.cidr,
+                                  ip_version=subnet.ip_version,
+                                  gateway_ip=subnet.gateway_ip)\
+            .AndReturn(subnet)
+        self.mox.ReplayAll()
+
+        form_data = {'net_name': network.name,
+                     'with_subnet': True,
+                     'subnet_name': subnet.name,
+                     'cidr': subnet.cidr,
+                     'ip_version': subnet.ip_version,
+                     'gateway_ip': subnet.gateway_ip}
+        url = reverse('horizon:nova:networks:create')
+        res = self.client.post(url, form_data)
+
+        self.assertNoFormErrors(res)
+        self.assertRedirectsNoFollow(res, INDEX_URL)
+
+    @test.create_stubs({api.quantum: ('network_create',)})
+    def test_network_create_post_network_exception(self):
+        network = self.networks.first()
+        api.quantum.network_create(IsA(http.HttpRequest), name=network.name)\
+            .AndRaise(self.exceptions.quantum)
+        self.mox.ReplayAll()
+
+        form_data = {'net_name': network.name,
+                     'with_subnet': False,
+                     'subnet_name': '',
+                     'cidr': '',
+                     'ip_version': 4,
+                     'gateway_ip': ''}
+        url = reverse('horizon:nova:networks:create')
+        res = self.client.post(url, form_data)
+
+        self.assertNoFormErrors(res)
+        self.assertRedirectsNoFollow(res, INDEX_URL)
+
+    @test.create_stubs({api.quantum: ('network_create',)})
+    def test_network_create_post_with_subnet_network_exception(self):
+        network = self.networks.first()
+        subnet = self.subnets.first()
+        api.quantum.network_create(IsA(http.HttpRequest), name=network.name)\
+            .AndRaise(self.exceptions.quantum)
+        self.mox.ReplayAll()
+
+        form_data = {'net_name': network.name,
+                     'with_subnet': True,
+                     'subnet_name': subnet.name,
+                     'cidr': subnet.cidr,
+                     'ip_version': subnet.ip_version,
+                     'gateway_ip': subnet.gateway_ip}
+        url = reverse('horizon:nova:networks:create')
+        res = self.client.post(url, form_data)
+
+        self.assertNoFormErrors(res)
+        self.assertRedirectsNoFollow(res, INDEX_URL)
+
+    @test.create_stubs({api.quantum: ('network_create',
+                                      'subnet_create',)})
+    def test_network_create_post_with_subnet_subnet_exception(self):
+        network = self.networks.first()
+        subnet = self.subnets.first()
+        api.quantum.network_create(IsA(http.HttpRequest), name=network.name)\
+            .AndReturn(network)
+        api.quantum.subnet_create(IsA(http.HttpRequest),
+                                  network_id=network.id,
+                                  name=subnet.name,
+                                  cidr=subnet.cidr,
+                                  ip_version=subnet.ip_version,
+                                  gateway_ip=subnet.gateway_ip)\
+            .AndRaise(self.exceptions.quantum)
+        self.mox.ReplayAll()
+
+        form_data = {'net_name': network.name,
+                     'with_subnet': True,
+                     'subnet_name': subnet.name,
+                     'cidr': subnet.cidr,
+                     'ip_version': subnet.ip_version,
+                     'gateway_ip': subnet.gateway_ip}
+        url = reverse('horizon:nova:networks:create')
+        res = self.client.post(url, form_data)
+
+        self.assertNoFormErrors(res)
+        self.assertRedirectsNoFollow(res, INDEX_URL)
+
+    def test_network_create_post_with_subnet_nocidr(self):
+        network = self.networks.first()
+        subnet = self.subnets.first()
+        self.mox.ReplayAll()
+
+        form_data = {'net_name': network.name,
+                     'with_subnet': True,
+                     'subnet_name': subnet.name,
+                     'cidr': '',
+                     'ip_version': subnet.ip_version,
+                     'gateway_ip': subnet.gateway_ip}
+        url = reverse('horizon:nova:networks:create')
+        res = self.client.post(url, form_data)
+
+        self.assertContains(res, escape('Specify "Network Address" or '
+                                        'clear "Create Subnet" checkbox.'))
+
+    def test_network_create_post_with_subnet_cidr_without_mask(self):
+        network = self.networks.first()
+        subnet = self.subnets.first()
+
+        form_data = {'net_name': network.name,
+                     'with_subnet': True,
+                     'subnet_name': subnet.name,
+                     'cidr': '10.0.0.0',
+                     'ip_version': subnet.ip_version,
+                     'gateway_ip': subnet.gateway_ip}
+        url = reverse('horizon:nova:networks:create')
+        res = self.client.post(url, form_data)
+
+        expected_msg = "The subnet in the Network Address is too small (/32)."
+        self.assertContains(res, expected_msg)
+
+    def test_network_create_post_with_subnet_cidr_inconsistent(self):
+        network = self.networks.first()
+        subnet = self.subnets.first()
+        self.mox.ReplayAll()
+
+        # dummy IPv6 address
+        cidr = '2001:0DB8:0:CD30:123:4567:89AB:CDEF/60'
+        form_data = {'net_name': network.name,
+                     'with_subnet': True,
+                     'subnet_name': subnet.name,
+                     'cidr': cidr,
+                     'ip_version': subnet.ip_version,
+                     'gateway_ip': subnet.gateway_ip}
+        url = reverse('horizon:nova:networks:create')
+        res = self.client.post(url, form_data)
+
+        expected_msg = 'Network Address and IP version are inconsistent.'
+        self.assertContains(res, expected_msg)
+
+    def test_network_create_post_with_subnet_gw_inconsistent(self):
+        network = self.networks.first()
+        subnet = self.subnets.first()
+        self.mox.ReplayAll()
+
+        # dummy IPv6 address
+        gateway_ip = '2001:0DB8:0:CD30:123:4567:89AB:CDEF'
+        form_data = {'net_name': network.name,
+                     'with_subnet': True,
+                     'subnet_name': subnet.name,
+                     'cidr': subnet.cidr,
+                     'ip_version': subnet.ip_version,
+                     'gateway_ip': gateway_ip}
+        url = reverse('horizon:nova:networks:create')
+        res = self.client.post(url, form_data)
+
+        self.assertContains(res, 'Gateway IP and IP version are inconsistent.')
+
+    @test.create_stubs({api.quantum: ('network_get',)})
+    def test_network_update_get(self):
+        network = self.networks.first()
+        api.quantum.network_get(IsA(http.HttpRequest), network.id)\
+            .AndReturn(network)
 
         self.mox.ReplayAll()
 
-        res = self.client.post(reverse('horizon:nova:networks:port_attach',
-                                       args=["n1", "p1"]),
-                               formData)
+        url = reverse('horizon:nova:networks:update', args=[network.id])
+        res = self.client.get(url)
 
-        self.assertRedirectsNoFollow(res,
-                                     reverse('horizon:nova:networks:detail',
-                                             args=["n1"]))
+        self.assertTemplateUsed(res, 'nova/networks/update.html')
 
-    def test_port_detach(self):
-        self.mox.StubOutWithMock(api, 'quantum_network_details')
-        self.mox.StubOutWithMock(api, 'quantum_list_ports')
-        self.mox.StubOutWithMock(api, 'quantum_port_attachment')
-        self.mox.StubOutWithMock(api, 'quantum_port_details')
-        self.mox.StubOutWithMock(api, 'get_vif_ids')
-        self.mox.StubOutWithMock(api, "quantum_set_port_state")
-        network_details = {'network': {'id': 'n1', 'name': 'network1'}}
-        api.quantum_network_details(IsA(http.HttpRequest),
-                                    'n1').AndReturn(network_details)
-
-        api.quantum_list_ports(IsA(http.HttpRequest),
-                               'n1').AndReturn(self.ports)
-
-        api.quantum_port_attachment(IsA(http.HttpRequest),
-                                    'n1', 'p1').AndReturn(self.port_attachment)
-
-        api.quantum_port_details(IsA(http.HttpRequest),
-                                 'n1', 'p1').AndReturn(self.port_details)
-
-        api.get_vif_ids(IsA(http.HttpRequest)).AndReturn(self.vifs)
-
-        api.quantum_set_port_state(IsA(http.HttpRequest),
-                                   'n1',
-                                   'p1',
-                                   {'port': {'state': 'DOWN'}}).AndReturn(True)
-
-        formData = {'action': "network_details__detach_port__p1"}
+    @test.create_stubs({api.quantum: ('network_get',)})
+    def test_network_update_get_exception(self):
+        network = self.networks.first()
+        api.quantum.network_get(IsA(http.HttpRequest), network.id)\
+            .AndRaise(self.exceptions.quantum)
 
         self.mox.ReplayAll()
 
-        detail_url = reverse('horizon:nova:networks:detail', args=["n1"])
-        res = self.client.post(detail_url, formData)
+        url = reverse('horizon:nova:networks:update', args=[network.id])
+        res = self.client.get(url)
 
-        self.assertRedirectsNoFollow(res, detail_url)
+        redir_url = INDEX_URL
+        self.assertRedirectsNoFollow(res, redir_url)
+
+    @test.create_stubs({api.quantum: ('network_modify',
+                                      'network_get',)})
+    def test_network_update_post(self):
+        network = self.networks.first()
+        api.quantum.network_modify(IsA(http.HttpRequest), network.id,
+                                   name=network.name)\
+            .AndReturn(network)
+        api.quantum.network_get(IsA(http.HttpRequest), network.id)\
+            .AndReturn(network)
+        self.mox.ReplayAll()
+
+        formData = {'network_id': network.id,
+                    'name': network.name,
+                    'tenant_id': network.tenant_id}
+        url = reverse('horizon:nova:networks:update', args=[network.id])
+        res = self.client.post(url, formData)
+
+        self.assertRedirectsNoFollow(res, INDEX_URL)
+
+    @test.create_stubs({api.quantum: ('network_modify',
+                                      'network_get',)})
+    def test_network_update_post_exception(self):
+        network = self.networks.first()
+        api.quantum.network_modify(IsA(http.HttpRequest), network.id,
+                                   name=network.name)\
+            .AndRaise(self.exceptions.quantum)
+        api.quantum.network_get(IsA(http.HttpRequest), network.id)\
+            .AndReturn(network)
+        self.mox.ReplayAll()
+
+        form_data = {'network_id': network.id,
+                     'name': network.name,
+                     'tenant_id': network.tenant_id}
+        url = reverse('horizon:nova:networks:update', args=[network.id])
+        res = self.client.post(url, form_data)
+
+        self.assertRedirectsNoFollow(res, INDEX_URL)
+
+    @test.create_stubs({api.quantum: ('network_list',
+                                      'subnet_list',
+                                      'network_delete')})
+    def test_delete_network_no_subnet(self):
+        network = self.networks.first()
+        api.quantum.network_list(IsA(http.HttpRequest),
+                                 tenant_id=network.tenant_id,
+                                 shared=False)\
+            .AndReturn([network])
+        api.quantum.network_list(IsA(http.HttpRequest),
+                                 shared=True)\
+            .AndReturn([])
+        api.quantum.subnet_list(IsA(http.HttpRequest), network_id=network.id)\
+            .AndReturn([])
+        api.quantum.network_delete(IsA(http.HttpRequest), network.id)
+
+        self.mox.ReplayAll()
+
+        form_data = {'action': 'networks__delete__%s' % network.id}
+        res = self.client.post(INDEX_URL, form_data)
+
+        self.assertRedirectsNoFollow(res, INDEX_URL)
+
+    @test.create_stubs({api.quantum: ('network_list',
+                                      'subnet_list',
+                                      'network_delete',
+                                      'subnet_delete')})
+    def test_delete_network_with_subnet(self):
+        network = self.networks.first()
+        subnet = self.subnets.first()
+        api.quantum.network_list(IsA(http.HttpRequest),
+                                 tenant_id=network.tenant_id,
+                                 shared=False)\
+            .AndReturn([network])
+        api.quantum.network_list(IsA(http.HttpRequest), shared=True)\
+            .AndReturn([])
+        api.quantum.subnet_list(IsA(http.HttpRequest), network_id=network.id)\
+            .AndReturn([subnet])
+        api.quantum.subnet_delete(IsA(http.HttpRequest), subnet.id)
+        api.quantum.network_delete(IsA(http.HttpRequest), network.id)
+
+        self.mox.ReplayAll()
+
+        form_data = {'action': 'networks__delete__%s' % network.id}
+        res = self.client.post(INDEX_URL, form_data)
+
+        self.assertRedirectsNoFollow(res, INDEX_URL)
+
+    @test.create_stubs({api.quantum: ('network_list',
+                                      'subnet_list',
+                                      'network_delete',
+                                      'subnet_delete')})
+    def test_delete_network_exception(self):
+        network = self.networks.first()
+        subnet = self.subnets.first()
+        api.quantum.network_list(IsA(http.HttpRequest),
+                                 tenant_id=network.tenant_id,
+                                 shared=False)\
+            .AndReturn([network])
+        api.quantum.network_list(IsA(http.HttpRequest),
+                                 shared=True)\
+            .AndReturn([])
+        api.quantum.subnet_list(IsA(http.HttpRequest), network_id=network.id)\
+            .AndReturn([subnet])
+        api.quantum.subnet_delete(IsA(http.HttpRequest), subnet.id)
+        api.quantum.network_delete(IsA(http.HttpRequest), network.id)\
+            .AndRaise(self.exceptions.quantum)
+
+        self.mox.ReplayAll()
+
+        form_data = {'action': 'networks__delete__%s' % network.id}
+        res = self.client.post(INDEX_URL, form_data)
+
+        self.assertRedirectsNoFollow(res, INDEX_URL)
+
+    @test.create_stubs({api.quantum: ('subnet_get',)})
+    def test_subnet_detail(self):
+        subnet = self.subnets.first()
+        api.quantum.subnet_get(IsA(http.HttpRequest), subnet.id)\
+            .AndReturn(self.subnets.first())
+
+        self.mox.ReplayAll()
+
+        res = self.client.get(reverse('horizon:nova:networks:subnets:detail',
+                                      args=[subnet.id]))
+
+        self.assertTemplateUsed(res, 'nova/networks/subnets/detail.html')
+        self.assertEqual(res.context['subnet'].id, subnet.id)
+
+    @test.create_stubs({api.quantum: ('subnet_get',)})
+    def test_subnet_detail_exception(self):
+        subnet = self.subnets.first()
+        api.quantum.subnet_get(IsA(http.HttpRequest), subnet.id)\
+            .AndRaise(self.exceptions.quantum)
+
+        self.mox.ReplayAll()
+
+        res = self.client.get(reverse('horizon:nova:networks:subnets:detail',
+                                      args=[subnet.id]))
+
+        self.assertRedirectsNoFollow(res, INDEX_URL)
+
+    @test.create_stubs({api.quantum: ('network_get',)})
+    def test_subnet_create_get(self):
+        network = self.networks.first()
+        api.quantum.network_get(IsA(http.HttpRequest),
+                                network.id)\
+            .AndReturn(self.networks.first())
+        self.mox.ReplayAll()
+
+        url = reverse('horizon:nova:networks:addsubnet',
+                      args=[network.id])
+        res = self.client.get(url)
+
+        self.assertTemplateUsed(res, 'nova/networks/subnets/create.html')
+
+    @test.create_stubs({api.quantum: ('network_get',
+                                      'subnet_create',)})
+    def test_subnet_create_post(self):
+        network = self.networks.first()
+        subnet = self.subnets.first()
+        api.quantum.network_get(IsA(http.HttpRequest),
+                                network.id)\
+            .AndReturn(self.networks.first())
+        api.quantum.subnet_create(IsA(http.HttpRequest),
+                                  network_id=network.id,
+                                  network_name=network.name,
+                                  name=subnet.name,
+                                  cidr=subnet.cidr,
+                                  ip_version=subnet.ip_version,
+                                  gateway_ip=subnet.gateway_ip)\
+            .AndReturn(subnet)
+        self.mox.ReplayAll()
+
+        form_data = {'network_id': subnet.network_id,
+                     'network_name': network.name,
+                     'name': subnet.name,
+                     'cidr': subnet.cidr,
+                     'ip_version': subnet.ip_version,
+                     'gateway_ip': subnet.gateway_ip}
+        url = reverse('horizon:nova:networks:addsubnet',
+                      args=[subnet.network_id])
+        res = self.client.post(url, form_data)
+
+        self.assertNoFormErrors(res)
+        redir_url = reverse('horizon:nova:networks:detail',
+                            args=[subnet.network_id])
+        self.assertRedirectsNoFollow(res, redir_url)
+
+    @test.create_stubs({api.quantum: ('network_get',
+                                      'subnet_create',)})
+    def test_subnet_create_post_network_exception(self):
+        network = self.networks.first()
+        subnet = self.subnets.first()
+        api.quantum.network_get(IsA(http.HttpRequest),
+                                network.id)\
+            .AndRaise(self.exceptions.quantum)
+        self.mox.ReplayAll()
+
+        form_data = {'network_id': subnet.network_id,
+                     'network_name': network.name,
+                     'name': subnet.name,
+                     'cidr': subnet.cidr,
+                     'ip_version': subnet.ip_version,
+                     'gateway_ip': subnet.gateway_ip}
+        url = reverse('horizon:nova:networks:addsubnet',
+                      args=[subnet.network_id])
+        res = self.client.post(url, form_data)
+
+        self.assertNoFormErrors(res)
+        self.assertRedirectsNoFollow(res, INDEX_URL)
+
+    @test.create_stubs({api.quantum: ('network_get',
+                                      'subnet_create',)})
+    def test_subnet_create_post_subnet_exception(self):
+        network = self.networks.first()
+        subnet = self.subnets.first()
+        api.quantum.network_get(IsA(http.HttpRequest),
+                                network.id)\
+            .AndReturn(self.networks.first())
+        api.quantum.subnet_create(IsA(http.HttpRequest),
+                                  network_id=network.id,
+                                  network_name=network.name,
+                                  name=subnet.name,
+                                  cidr=subnet.cidr,
+                                  ip_version=subnet.ip_version,
+                                  gateway_ip=subnet.gateway_ip)\
+            .AndRaise(self.exceptions.quantum)
+        self.mox.ReplayAll()
+
+        form_data = {'network_id': subnet.network_id,
+                     'network_name': network.name,
+                     'name': subnet.name,
+                     'cidr': subnet.cidr,
+                     'ip_version': subnet.ip_version,
+                     'gateway_ip': subnet.gateway_ip}
+        url = reverse('horizon:nova:networks:addsubnet',
+                      args=[subnet.network_id])
+        res = self.client.post(url, form_data)
+
+        redir_url = reverse('horizon:nova:networks:detail',
+                            args=[subnet.network_id])
+        self.assertRedirectsNoFollow(res, redir_url)
+
+    @test.create_stubs({api.quantum: ('network_get',)})
+    def test_subnet_create_post_cidr_inconsistent(self):
+        network = self.networks.first()
+        subnet = self.subnets.first()
+        api.quantum.network_get(IsA(http.HttpRequest),
+                                network.id)\
+            .AndReturn(self.networks.first())
+        self.mox.ReplayAll()
+
+        # dummy IPv6 address
+        cidr = '2001:0DB8:0:CD30:123:4567:89AB:CDEF/60'
+        form_data = {'network_id': subnet.network_id,
+                     'network_name': network.name,
+                     'name': subnet.name,
+                     'cidr': cidr,
+                     'ip_version': subnet.ip_version,
+                     'gateway_ip': subnet.gateway_ip}
+        url = reverse('horizon:nova:networks:addsubnet',
+                      args=[subnet.network_id])
+        res = self.client.post(url, form_data)
+
+        expected_msg = 'Network Address and IP version are inconsistent.'
+        self.assertContains(res, expected_msg)
+
+    @test.create_stubs({api.quantum: ('network_get',)})
+    def test_subnet_create_post_gw_inconsistent(self):
+        network = self.networks.first()
+        subnet = self.subnets.first()
+        api.quantum.network_get(IsA(http.HttpRequest),
+                                network.id)\
+            .AndReturn(self.networks.first())
+        self.mox.ReplayAll()
+
+        # dummy IPv6 address
+        gateway_ip = '2001:0DB8:0:CD30:123:4567:89AB:CDEF'
+        form_data = {'network_id': subnet.network_id,
+                     'network_name': network.name,
+                     'name': subnet.name,
+                     'cidr': subnet.cidr,
+                     'ip_version': subnet.ip_version,
+                     'gateway_ip': gateway_ip}
+        url = reverse('horizon:nova:networks:addsubnet',
+                      args=[subnet.network_id])
+        res = self.client.post(url, form_data)
+
+        self.assertContains(res, 'Gateway IP and IP version are inconsistent.')
+
+    @test.create_stubs({api.quantum: ('subnet_modify',
+                                      'subnet_get',)})
+    def test_subnet_update_post(self):
+        subnet = self.subnets.first()
+        api.quantum.subnet_get(IsA(http.HttpRequest), subnet.id)\
+            .AndReturn(subnet)
+        api.quantum.subnet_modify(IsA(http.HttpRequest), subnet.id,
+                                  name=subnet.name,
+                                  gateway_ip=subnet.gateway_ip)\
+            .AndReturn(subnet)
+        self.mox.ReplayAll()
+
+        formData = {'network_id': subnet.network_id,
+                    'subnet_id': subnet.id,
+                    'name': subnet.name,
+                    'cidr': subnet.cidr,
+                    'ip_version': subnet.ip_version,
+                    'gateway_ip': subnet.gateway_ip}
+        url = reverse('horizon:nova:networks:editsubnet',
+                      args=[subnet.network_id, subnet.id])
+        res = self.client.post(url, formData)
+
+        redir_url = reverse('horizon:nova:networks:detail',
+                            args=[subnet.network_id])
+        self.assertRedirectsNoFollow(res, redir_url)
+
+    @test.create_stubs({api.quantum: ('subnet_modify',
+                                      'subnet_get',)})
+    def test_subnet_update_post_gw_inconsistent(self):
+        subnet = self.subnets.first()
+        api.quantum.subnet_get(IsA(http.HttpRequest), subnet.id)\
+            .AndReturn(subnet)
+        self.mox.ReplayAll()
+
+        # dummy IPv6 address
+        gateway_ip = '2001:0DB8:0:CD30:123:4567:89AB:CDEF'
+        formData = {'network_id': subnet.network_id,
+                    'subnet_id': subnet.id,
+                    'name': subnet.name,
+                    'cidr': subnet.cidr,
+                    'ip_version': subnet.ip_version,
+                    'gateway_ip': gateway_ip}
+        url = reverse('horizon:nova:networks:editsubnet',
+                      args=[subnet.network_id, subnet.id])
+        res = self.client.post(url, formData)
+
+        self.assertContains(res, 'Gateway IP and IP version are inconsistent.')
+
+    @test.create_stubs({api.quantum: ('subnet_delete',
+                                      'subnet_list',
+                                      'network_get',
+                                      'port_list',)})
+    def test_subnet_delete(self):
+        subnet = self.subnets.first()
+        network_id = subnet.network_id
+        api.quantum.subnet_delete(IsA(http.HttpRequest), subnet.id)
+        api.quantum.subnet_list(IsA(http.HttpRequest), network_id=network_id)\
+            .AndReturn([self.subnets.first()])
+        api.quantum.network_get(IsA(http.HttpRequest), network_id)\
+            .AndReturn(self.networks.first())
+        api.quantum.port_list(IsA(http.HttpRequest), network_id=network_id)\
+            .AndReturn([self.ports.first()])
+        # Called from SubnetTable
+        api.quantum.network_get(IsA(http.HttpRequest), network_id)\
+            .AndReturn(self.networks.first())
+        self.mox.ReplayAll()
+
+        formData = {'action': 'subnets__delete__%s' % subnet.id}
+        url = reverse('horizon:nova:networks:detail',
+                      args=[network_id])
+        res = self.client.post(url, formData)
+
+        self.assertRedirectsNoFollow(res, url)
+
+    @test.create_stubs({api.quantum: ('subnet_delete',
+                                      'subnet_list',
+                                      'network_get',
+                                      'port_list',)})
+    def test_subnet_delete_excceeption(self):
+        subnet = self.subnets.first()
+        network_id = subnet.network_id
+        api.quantum.subnet_delete(IsA(http.HttpRequest), subnet.id)\
+            .AndRaise(self.exceptions.quantum)
+        api.quantum.subnet_list(IsA(http.HttpRequest), network_id=network_id)\
+            .AndReturn([self.subnets.first()])
+        api.quantum.network_get(IsA(http.HttpRequest), network_id)\
+            .AndReturn(self.networks.first())
+        api.quantum.port_list(IsA(http.HttpRequest), network_id=network_id)\
+            .AndReturn([self.ports.first()])
+        # Called from SubnetTable
+        api.quantum.network_get(IsA(http.HttpRequest), network_id)\
+            .AndReturn(self.networks.first())
+        self.mox.ReplayAll()
+
+        formData = {'action': 'subnets__delete__%s' % subnet.id}
+        url = reverse('horizon:nova:networks:detail',
+                      args=[network_id])
+        res = self.client.post(url, formData)
+
+        self.assertRedirectsNoFollow(res, url)
+
+    @test.create_stubs({api.quantum: ('port_get',)})
+    def test_port_detail(self):
+        port = self.ports.first()
+        api.quantum.port_get(IsA(http.HttpRequest), port.id)\
+            .AndReturn(self.ports.first())
+
+        self.mox.ReplayAll()
+
+        res = self.client.get(reverse('horizon:nova:networks:ports:detail',
+                                      args=[port.id]))
+
+        self.assertTemplateUsed(res, 'nova/networks/ports/detail.html')
+        self.assertEqual(res.context['port'].id, port.id)
+
+    @test.create_stubs({api.quantum: ('port_get',)})
+    def test_port_detail_exception(self):
+        port = self.ports.first()
+        api.quantum.port_get(IsA(http.HttpRequest), port.id)\
+            .AndRaise(self.exceptions.quantum)
+
+        self.mox.ReplayAll()
+
+        res = self.client.get(reverse('horizon:nova:networks:ports:detail',
+                                      args=[port.id]))
+
+        self.assertRedirectsNoFollow(res, INDEX_URL)

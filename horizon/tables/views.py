@@ -14,42 +14,77 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from collections import defaultdict
+
 from django.views import generic
 
 
-class MultiTableView(generic.TemplateView):
-    """
-    A class-based generic view to handle the display and processing of
-    multiple :class:`~horizon.tables.DataTable` classes in a single view.
+class MultiTableMixin(object):
+    """ A generic mixin which provides methods for handling DataTables. """
+    data_method_pattern = "get_%s_data"
 
-    Three steps are required to use this view: set the ``table_classes``
-    attribute with a tuple of the desired
-    :class:`~horizon.tables.DataTable` classes;
-    define a ``get_{{ table_name }}_data`` method for each table class
-    which returns a set of data for that table; and specify a template for
-    the ``template_name`` attribute.
-    """
     def __init__(self, *args, **kwargs):
-        super(MultiTableView, self).__init__(*args, **kwargs)
+        super(MultiTableMixin, self).__init__(*args, **kwargs)
         self.table_classes = getattr(self, "table_classes", [])
         self._data = {}
         self._tables = {}
 
+        self._data_methods = defaultdict(list)
+        self.get_data_methods(self.table_classes, self._data_methods)
+
     def _get_data_dict(self):
         if not self._data:
             for table in self.table_classes:
-                func_name = "get_%s_data" % table._meta.name
-                data_func = getattr(self, func_name, None)
-                if data_func is None:
-                    cls_name = self.__class__.__name__
-                    raise NotImplementedError("You must define a %s method "
-                                              "on %s." % (func_name, cls_name))
-                self._data[table._meta.name] = data_func()
+                data = []
+                name = table._meta.name
+                func_list = self._data_methods.get(name, [])
+                for func in func_list:
+                    data.extend(func())
+                self._data[name] = data
         return self._data
+
+    def get_data_methods(self, table_classes, methods):
+        for table in table_classes:
+            name = table._meta.name
+            if table._meta.mixed_data_type:
+                for data_type in table._meta.data_types:
+                    func = self.check_method_exist(self.data_method_pattern,
+                                                   data_type)
+                    if func:
+                        type_name = table._meta.data_type_name
+                        methods[name].append(self.wrap_func(func,
+                                                            type_name,
+                                                            data_type))
+            else:
+                func = self.check_method_exist(self.data_method_pattern,
+                                               name)
+                if func:
+                    methods[name].append(func)
+
+    def wrap_func(self, data_func, type_name, data_type):
+        def final_data():
+            data = data_func()
+            self.assign_type_string(data, type_name, data_type)
+            return data
+        return final_data
+
+    def check_method_exist(self, func_pattern="%s", *names):
+        func_name = func_pattern % names
+        func = getattr(self, func_name, None)
+        if not func or not callable(func):
+            cls_name = self.__class__.__name__
+            raise NotImplementedError("You must define a %s method"
+                                      "in %s." % (func_name, cls_name))
+        else:
+            return func
+
+    def assign_type_string(self, data, type_name, data_type):
+        for datum in data:
+            setattr(datum, type_name, data_type)
 
     def get_tables(self):
         if not self.table_classes:
-            raise AttributeError('You must specify a one or more DataTable '
+            raise AttributeError('You must specify one or more DataTable '
                                  'classes for the "table_classes" attribute '
                                  'on %s.' % self.__class__.__name__)
         if not self._tables:
@@ -64,18 +99,36 @@ class MultiTableView(generic.TemplateView):
         return self._tables
 
     def get_context_data(self, **kwargs):
-        context = super(MultiTableView, self).get_context_data(**kwargs)
+        context = super(MultiTableMixin, self).get_context_data(**kwargs)
         tables = self.get_tables()
         for name, table in tables.items():
-            if table.data is None:
-                raise AttributeError('%s has no data associated with it.'
-                                     % table.__class__.__name__)
             context["%s_table" % name] = table
         return context
 
     def has_more_data(self, table):
         return False
 
+    def handle_table(self, table):
+        name = table.name
+        data = self._get_data_dict()
+        self._tables[name].data = data[table._meta.name]
+        self._tables[name]._meta.has_more_data = self.has_more_data(table)
+        handled = self._tables[name].maybe_handle()
+        return handled
+
+
+class MultiTableView(MultiTableMixin, generic.TemplateView):
+    """
+    A class-based generic view to handle the display and processing of
+    multiple :class:`~horizon.tables.DataTable` classes in a single view.
+
+    Three steps are required to use this view: set the ``table_classes``
+    attribute with a tuple of the desired
+    :class:`~horizon.tables.DataTable` classes;
+    define a ``get_{{ table_name }}_data`` method for each table class
+    which returns a set of data for that table; and specify a template for
+    the ``template_name`` attribute.
+    """
     def construct_tables(self):
         tables = self.get_tables().values()
         # Early out before data is loaded
@@ -84,14 +137,11 @@ class MultiTableView(generic.TemplateView):
             if preempted:
                 return preempted
         # Load data into each table and check for action handlers
-        data = self._get_data_dict()
         for table in tables:
-            name = table.name
-            self._tables[name].data = data[table._meta.name]
-            self._tables[name]._meta.has_more_data = self.has_more_data(table)
-            handled = self._tables[name].maybe_handle()
+            handled = self.handle_table(table)
             if handled:
                 return handled
+
         # If we didn't already return a response, returning None continues
         # with the view as normal.
         return None
@@ -149,3 +199,54 @@ class DataTableView(MultiTableView):
         context = super(DataTableView, self).get_context_data(**kwargs)
         context[self.context_object_name] = self.table
         return context
+
+
+class MixedDataTableView(DataTableView):
+    """ A class-based generic view to handle DataTable with mixed data
+    types.
+
+    Basic usage is the same as DataTableView.
+
+    Three steps are required to use this view:
+    #. Set the ``table_class`` attribute with desired
+    :class:`~horizon.tables.DataTable` class. In the class the
+    ``data_types`` list should have at least two elements.
+
+    #. Define a ``get_{{ data_type }}_data`` method for each data type
+    which returns a set of data for the table.
+
+    #. Specify a template for the ``template_name`` attribute.
+    """
+    table_class = None
+    context_object_name = 'table'
+
+    def _get_data_dict(self):
+        if not self._data:
+            table = self.table_class
+            self._data = {table._meta.name: []}
+            for data_type in table.data_types:
+                func_name = "get_%s_data" % data_type
+                data_func = getattr(self, func_name, None)
+                if data_func is None:
+                    cls_name = self.__class__.__name__
+                    raise NotImplementedError("You must define a %s method "
+                                              "for %s data type in %s." %
+                                              (func_name, data_type, cls_name))
+                data = data_func()
+                self.assign_type_string(data, data_type)
+                self._data[table._meta.name].extend(data)
+        return self._data
+
+    def assign_type_string(self, data, type_string):
+        for datum in data:
+            setattr(datum, self.table_class.data_type_name,
+                    type_string)
+
+    def get_table(self):
+        self.table = super(MixedDataTableView, self).get_table()
+        if not self.table._meta.mixed_data_type:
+            raise AttributeError('You must have at least two elements in '
+                                 'the data_types attibute '
+                                 'in table %s to use MixedDataTableView.'
+                                 % self.table._meta.name)
+        return self.table

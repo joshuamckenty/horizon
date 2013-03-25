@@ -19,6 +19,8 @@ from django import shortcuts
 from django.core.urlresolvers import reverse
 from django.utils.translation import ugettext_lazy as _
 
+from mox import IsA
+
 from horizon import tables
 from horizon import test
 
@@ -51,11 +53,21 @@ TEST_DATA_3 = (
     FakeObject('1', 'object_1', 'value_1', 'up', 'optional_1', 'excluded_1'),
 )
 
+TEST_DATA_4 = (
+    FakeObject('1', 'object_1', 2, 'up'),
+    FakeObject('2', 'object_2', 4, 'up'),
+)
+
+TEST_DATA_5 = (
+    FakeObject('1', 'object_1', 'A Value That is longer than 35 characters!',
+               'down', 'optional_1'),
+)
+
 
 class MyLinkAction(tables.LinkAction):
     name = "login"
     verbose_name = "Log In"
-    url = "horizon:auth_login"
+    url = "login"
     attrs = {
         "class": "ajax-modal",
     }
@@ -73,11 +85,19 @@ class MyAction(tables.Action):
         return getattr(obj, 'status', None) != 'down'
 
     def handle(self, data_table, request, object_ids):
-        return shortcuts.redirect('http://example.com/%s' % len(object_ids))
+        return shortcuts.redirect('http://example.com/?ids=%s'
+                                  % ",".join(object_ids))
 
 
-class MyUpdateAction(tables.UpdateAction):
-    def get_data(self, request, obj_id):
+class MyColumn(tables.Column):
+    pass
+
+
+class MyRow(tables.Row):
+    ajax = True
+
+    @classmethod
+    def get_data(cls, request, obj_id):
         return TEST_DATA_2[0]
 
 
@@ -130,16 +150,18 @@ def get_name(obj):
 
 
 def get_link(obj):
-    return reverse('horizon:auth_login')
+    return reverse('login')
 
 
 class MyTable(tables.DataTable):
-    id = tables.Column('id', hidden=True)
+    id = tables.Column('id', hidden=True, sortable=False)
     name = tables.Column(get_name, verbose_name="Verbose Name", sortable=True)
     value = tables.Column('value',
                           sortable=True,
                           link='http://example.com/',
-                          attrs={'classes': ('green', 'blue')})
+                          attrs={'class': 'green blue'},
+                          summation="average",
+                          truncate=35)
     status = tables.Column('status', link=get_link)
     optional = tables.Column('optional', empty_value='N/A')
     excluded = tables.Column('excluded')
@@ -147,11 +169,22 @@ class MyTable(tables.DataTable):
     class Meta:
         name = "my_table"
         verbose_name = "My Table"
-        status_column = "status"
+        status_columns = ["status"]
         columns = ('id', 'name', 'value', 'optional', 'status')
+        row_class = MyRow
+        column_class = MyColumn
         table_actions = (MyFilterAction, MyAction, MyBatchAction)
-        row_actions = (MyAction, MyLinkAction, MyUpdateAction,
-                       MyBatchAction, MyToggleAction)
+        row_actions = (MyAction, MyLinkAction, MyBatchAction, MyToggleAction)
+
+
+class NoActionsTable(tables.DataTable):
+    id = tables.Column('id')
+
+    class Meta:
+        name = "no_actions_table"
+        verbose_name = _("No Actions Table")
+        table_actions = ()
+        row_actions = ()
 
 
 class DataTableTests(test.TestCase):
@@ -169,22 +202,23 @@ class DataTableTests(test.TestCase):
         # Column ordering and exclusion.
         # This should include auto-columns for multi_select and actions,
         # but should not contain the excluded column.
+        # Additionally, auto-generated columns should use the custom
+        # column class specified on the table.
         self.assertQuerysetEqual(self.table.columns.values(),
-                                 ['<Column: multi_select>',
+                                 ['<MyColumn: multi_select>',
                                   '<Column: id>',
                                   '<Column: name>',
                                   '<Column: value>',
                                   '<Column: optional>',
                                   '<Column: status>',
-                                  '<Column: actions>'])
+                                  '<MyColumn: actions>'])
         # Actions (these also test ordering)
         self.assertQuerysetEqual(self.table.base_actions.values(),
                                  ['<MyBatchAction: batch>',
                                   '<MyAction: delete>',
                                   '<MyFilterAction: filter>',
                                   '<MyLinkAction: login>',
-                                  '<MyToggleAction: toggle>',
-                                  '<MyUpdateAction: update>'])
+                                  '<MyToggleAction: toggle>'])
         self.assertQuerysetEqual(self.table.get_table_actions(),
                                  ['<MyFilterAction: filter>',
                                   '<MyAction: delete>',
@@ -192,16 +226,17 @@ class DataTableTests(test.TestCase):
         self.assertQuerysetEqual(self.table.get_row_actions(TEST_DATA[0]),
                                  ['<MyAction: delete>',
                                   '<MyLinkAction: login>',
-                                  '<MyUpdateAction: update>',
                                   '<MyBatchAction: batch>',
                                   '<MyToggleAction: toggle>'])
         # Auto-generated columns
         multi_select = self.table.columns['multi_select']
         self.assertEqual(multi_select.auto, "multi_select")
-        self.assertEqual(multi_select.get_classes(), "multi_select_column")
+        self.assertEqual(multi_select.get_final_attrs().get('class', ""),
+                         "multi_select_column")
         actions = self.table.columns['actions']
         self.assertEqual(actions.auto, "actions")
-        self.assertEqual(actions.get_classes(), "actions_column")
+        self.assertEqual(actions.get_final_attrs().get('class', ""),
+                         "actions_column")
 
     def test_table_force_no_multiselect(self):
         class TempTable(MyTable):
@@ -272,18 +307,18 @@ class DataTableTests(test.TestCase):
         self.table = MyTable(self.request, TEST_DATA)
         # Verify we retrieve the right columns for headers
         columns = self.table.get_columns()
-        self.assertQuerysetEqual(columns, ['<Column: multi_select>',
+        self.assertQuerysetEqual(columns, ['<MyColumn: multi_select>',
                                            '<Column: id>',
                                            '<Column: name>',
                                            '<Column: value>',
                                            '<Column: optional>',
                                            '<Column: status>',
-                                           '<Column: actions>'])
+                                           '<MyColumn: actions>'])
         # Verify we retrieve the right rows from our data
         rows = self.table.get_rows()
-        self.assertQuerysetEqual(rows, ['<Row: my_table__row__1>',
-                                        '<Row: my_table__row__2>',
-                                        '<Row: my_table__row__3>'])
+        self.assertQuerysetEqual(rows, ['<MyRow: my_table__row__1>',
+                                        '<MyRow: my_table__row__2>',
+                                        '<MyRow: my_table__row__3>'])
         # Verify each row contains the right cells
         self.assertQuerysetEqual(rows[0].get_cells(),
                                  ['<Cell: multi_select, my_table__row__1>',
@@ -298,9 +333,9 @@ class DataTableTests(test.TestCase):
         self.table = MyTable(self.request, TEST_DATA)
         row = self.table.get_rows()[0]
         row3 = self.table.get_rows()[2]
-        id_col = self.table.base_columns['id']
-        name_col = self.table.base_columns['name']
-        value_col = self.table.base_columns['value']
+        id_col = self.table.columns['id']
+        name_col = self.table.columns['name']
+        value_col = self.table.columns['value']
         # transform
         self.assertEqual(row.cells['id'].data, '1')  # Standard attr access
         self.assertEqual(row.cells['name'].data, 'custom object_1')  # Callable
@@ -309,21 +344,22 @@ class DataTableTests(test.TestCase):
         self.assertEqual(unicode(name_col), "Verbose Name")
         # sortable
         self.assertEqual(id_col.sortable, False)
-        self.assertNotIn("sortable", id_col.get_classes())
+        self.assertNotIn("sortable", id_col.get_final_attrs().get('class', ""))
         self.assertEqual(name_col.sortable, True)
-        self.assertIn("sortable", name_col.get_classes())
+        self.assertIn("sortable", name_col.get_final_attrs().get('class', ""))
         # hidden
         self.assertEqual(id_col.hidden, True)
-        self.assertIn("hide", id_col.get_classes())
+        self.assertIn("hide", id_col.get_final_attrs().get('class', ""))
         self.assertEqual(name_col.hidden, False)
-        self.assertNotIn("hide", name_col.get_classes())
+        self.assertNotIn("hide", name_col.get_final_attrs().get('class', ""))
         # link and get_link_url
         self.assertIn('href="http://example.com/"', row.cells['value'].value)
         self.assertIn('href="/auth/login/"', row.cells['status'].value)
         # empty_value
         self.assertEqual(row3.cells['optional'].value, "N/A")
-        # get_classes
-        self.assertEqual(value_col.get_classes(), "green blue sortable")
+        # classes
+        self.assertEqual(value_col.get_final_attrs().get('class', ""),
+                         "green blue sortable anchor normal_column")
         # status
         cell_status = row.cells['status'].status
         self.assertEqual(cell_status, True)
@@ -361,6 +397,14 @@ class DataTableTests(test.TestCase):
         self.assertEqual(row.cells['status'].get_status_class(cell_status),
                          'status_up')
 
+    def test_table_column_truncation(self):
+        self.table = MyTable(self.request, TEST_DATA_5)
+        row = self.table.get_rows()[0]
+
+        self.assertEqual(len(row.cells['value'].data), 35)
+        self.assertEqual(row.cells['value'].data,
+                         u'A Value That is longer than 35 c...')
+
     def test_table_rendering(self):
         self.table = MyTable(self.request, TEST_DATA)
         # Table actions
@@ -369,24 +413,26 @@ class DataTableTests(test.TestCase):
         self.assertContains(resp, "table_search", 1)
         self.assertContains(resp, "my_table__filter__q", 1)
         self.assertContains(resp, "my_table__delete", 1)
+        self.assertContains(resp, 'id="my_table__action_delete"', 1)
         # Row actions
         row_actions = self.table.render_row_actions(TEST_DATA[0])
         resp = http.HttpResponse(row_actions)
-        self.assertContains(resp, "<li", 4)
+        self.assertContains(resp, "<li", 3)
         self.assertContains(resp, "my_table__delete__1", 1)
-        self.assertContains(resp,
-                            "action=update&amp;table=my_table&amp;obj_id=1", 1)
-        self.assertContains(resp, "data-update-interval", 1)
         self.assertContains(resp, "my_table__toggle__1", 1)
         self.assertContains(resp, "/auth/login/", 1)
         self.assertContains(resp, "ajax-modal", 1)
+        self.assertContains(resp, 'id="my_table__row_1__action_delete"', 1)
         # Whole table
         resp = http.HttpResponse(self.table.render())
         self.assertContains(resp, '<table id="my_table"', 1)
-        self.assertContains(resp, '<th ', 7)
-        self.assertContains(resp, '<tr id="my_table__row__1"', 1)
-        self.assertContains(resp, '<tr id="my_table__row__2"', 1)
-        self.assertContains(resp, '<tr id="my_table__row__3"', 1)
+        self.assertContains(resp, '<th ', 8)
+        self.assertContains(resp, 'id="my_table__row__1"', 1)
+        self.assertContains(resp, 'id="my_table__row__2"', 1)
+        self.assertContains(resp, 'id="my_table__row__3"', 1)
+        update_string = "action=row_update&amp;table=my_table&amp;obj_id="
+        self.assertContains(resp, update_string, 3)
+        self.assertContains(resp, "data-update-interval", 3)
         # Verify our XSS protection
         self.assertContains(resp, '<a href="http://example.com/">'
                                   '&lt;strong&gt;evil&lt;/strong&gt;</a>', 1)
@@ -405,20 +451,20 @@ class DataTableTests(test.TestCase):
                          ('my_table', 'delete', '1'))
         handled = self.table.maybe_handle()
         self.assertEqual(handled.status_code, 302)
-        self.assertEqual(handled["location"], "http://example.com/1")
+        self.assertEqual(handled["location"], "http://example.com/?ids=1")
 
         # Batch action (without toggle) conjugation behavior
         req = self.factory.get('/my_url/')
         self.table = MyTable(req, TEST_DATA_3)
-        toggle_action = self.table.get_row_actions(TEST_DATA_3[0])[3]
+        toggle_action = self.table.get_row_actions(TEST_DATA_3[0])[2]
         self.assertEqual(unicode(toggle_action.verbose_name), "Batch Item")
 
         # Single object toggle action
         # GET page - 'up' to 'down'
         req = self.factory.get('/my_url/')
         self.table = MyTable(req, TEST_DATA_3)
-        self.assertEqual(len(self.table.get_row_actions(TEST_DATA_3[0])), 5)
-        toggle_action = self.table.get_row_actions(TEST_DATA_3[0])[4]
+        self.assertEqual(len(self.table.get_row_actions(TEST_DATA_3[0])), 4)
+        toggle_action = self.table.get_row_actions(TEST_DATA_3[0])[3]
         self.assertEqual(unicode(toggle_action.verbose_name), "Down Item")
 
         # Toggle from status 'up' to 'down'
@@ -438,8 +484,8 @@ class DataTableTests(test.TestCase):
         # GET page - 'down' to 'up'
         req = self.factory.get('/my_url/')
         self.table = MyTable(req, TEST_DATA_2)
-        self.assertEqual(len(self.table.get_row_actions(TEST_DATA_2[0])), 4)
-        toggle_action = self.table.get_row_actions(TEST_DATA_2[0])[3]
+        self.assertEqual(len(self.table.get_row_actions(TEST_DATA_2[0])), 3)
+        toggle_action = self.table.get_row_actions(TEST_DATA_2[0])[2]
         self.assertEqual(unicode(toggle_action.verbose_name), "Up Item")
 
         # POST page
@@ -463,7 +509,7 @@ class DataTableTests(test.TestCase):
                          ('my_table', 'delete', None))
         handled = self.table.maybe_handle()
         self.assertEqual(handled.status_code, 302)
-        self.assertEqual(handled["location"], "http://example.com/2")
+        self.assertEqual(handled["location"], "http://example.com/?ids=1,2")
 
         # Action with nothing selected
         req = self.factory.post('/my_url/', {'action': action_string})
@@ -474,6 +520,18 @@ class DataTableTests(test.TestCase):
         self.assertEqual(handled, None)
         self.assertEqual(list(req._messages)[0].message,
                          "Please select a row before taking that action.")
+
+        # Action with specific id and multiple ids favors single id
+        action_string = "my_table__delete__3"
+        req = self.factory.post('/my_url/', {'action': action_string,
+                                             'object_ids': [1, 2]})
+        self.table = MyTable(req, TEST_DATA)
+        self.assertEqual(self.table.parse_action(action_string),
+                         ('my_table', 'delete', '3'))
+        handled = self.table.maybe_handle()
+        self.assertEqual(handled.status_code, 302)
+        self.assertEqual(handled["location"],
+                         "http://example.com/?ids=3")
 
         # At least one object in table
         # BatchAction is available
@@ -501,8 +559,18 @@ class DataTableTests(test.TestCase):
         self.assertQuerysetEqual(self.table.filtered_data,
                                  ['<FakeObject: object_2>'])
 
+        # Ensure fitering respects the request method, e.g. no filter here
+        req = self.factory.get('/my_url/', {action_string: '2'})
+        self.table = MyTable(req, TEST_DATA)
+        handled = self.table.maybe_handle()
+        self.assertEqual(handled, None)
+        self.assertQuerysetEqual(self.table.filtered_data,
+                                 ['<FakeObject: object_1>',
+                                  '<FakeObject: object_2>',
+                                  '<FakeObject: object_3>'])
+
         # Updating and preemptive actions
-        params = {"table": "my_table", "action": "update", "obj_id": "1"}
+        params = {"table": "my_table", "action": "row_update", "obj_id": "1"}
         req = self.factory.get('/my_url/',
                                params,
                                HTTP_X_REQUESTED_WITH='XMLHttpRequest')
@@ -531,3 +599,77 @@ class DataTableTests(test.TestCase):
         row_actions = self.table.get_row_actions(TEST_DATA[0])
         self.assertEqual(unicode(row_actions[0].verbose_name), "Delete Me")
         self.assertEqual(unicode(row_actions[1].verbose_name), "Log In")
+
+    def test_column_uniqueness(self):
+        table1 = MyTable(self.request)
+        table2 = MyTable(self.request)
+        # Regression test for launchpad bug 964345.
+        self.assertNotEqual(id(table1), id(table2))
+        self.assertNotEqual(id(table1.columns), id(table2.columns))
+        t1cols = table1.columns.values()
+        t2cols = table2.columns.values()
+        self.assertEqual(t1cols[0].name, t2cols[0].name)
+        self.assertNotEqual(id(t1cols[0]), id(t2cols[0]))
+        self.assertNotEqual(id(t1cols[0].table),
+                            id(t2cols[0].table))
+        self.assertNotEqual(id(t1cols[0].table._data_cache),
+                            id(t2cols[0].table._data_cache))
+
+    def test_summation_row(self):
+        # Test with the "average" method.
+        table = MyTable(self.request, TEST_DATA_4)
+        res = http.HttpResponse(table.render())
+        self.assertContains(res, '<tr class="summation"', 1)
+        self.assertContains(res, '<td>Summary</td>', 1)
+        self.assertContains(res, '<td>3.0</td>', 1)
+
+        # Test again with the "sum" method.
+        table.columns['value'].summation = "sum"
+        res = http.HttpResponse(table.render())
+        self.assertContains(res, '<tr class="summation"', 1)
+        self.assertContains(res, '<td>Summary</td>', 1)
+        self.assertContains(res, '<td>6</td>', 1)
+
+        # One last test with no summation.
+        table.columns['value'].summation = None
+        table.needs_summary_row = False
+        res = http.HttpResponse(table.render())
+        self.assertNotContains(res, '<tr class="summation"')
+        self.assertNotContains(res, '<td>3.0</td>')
+        self.assertNotContains(res, '<td>6</td>')
+
+    def test_table_action_attributes(self):
+        table = MyTable(self.request, TEST_DATA)
+        self.assertTrue(table.has_actions)
+        self.assertTrue(table.needs_form_wrapper)
+        res = http.HttpResponse(table.render())
+        self.assertContains(res, "<form")
+
+        table = MyTable(self.request, TEST_DATA, needs_form_wrapper=False)
+        self.assertTrue(table.has_actions)
+        self.assertFalse(table.needs_form_wrapper)
+        res = http.HttpResponse(table.render())
+        self.assertNotContains(res, "<form")
+
+        table = NoActionsTable(self.request, TEST_DATA)
+        self.assertFalse(table.has_actions)
+        self.assertFalse(table.needs_form_wrapper)
+        res = http.HttpResponse(table.render())
+        self.assertNotContains(res, "<form")
+
+    def test_table_action_object_display_is_none(self):
+        action_string = "my_table__toggle__1"
+        req = self.factory.post('/my_url/', {'action': action_string})
+        self.table = MyTable(req, TEST_DATA)
+
+        self.mox.StubOutWithMock(self.table, 'get_object_display')
+        self.table.get_object_display(IsA(FakeObject)).AndReturn(None)
+        self.mox.ReplayAll()
+
+        self.assertEqual(self.table.parse_action(action_string),
+                         ('my_table', 'toggle', '1'))
+        handled = self.table.maybe_handle()
+        self.assertEqual(handled.status_code, 302)
+        self.assertEqual(handled["location"], "/my_url/")
+        self.assertEqual(list(req._messages)[0].message,
+                        u"Downed Item: N/A")

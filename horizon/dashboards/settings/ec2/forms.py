@@ -17,10 +17,11 @@
 import logging
 import tempfile
 import zipfile
+from contextlib import closing
 
 from django import http
 from django.template.loader import render_to_string
-from django.utils.translation import ugettext as _
+from django.utils.translation import ugettext_lazy as _
 
 from horizon import api
 from horizon import exceptions
@@ -33,14 +34,8 @@ LOG = logging.getLogger(__name__)
 class DownloadX509Credentials(forms.SelfHandlingForm):
     tenant = forms.ChoiceField(label=_("Select a Project"))
 
-    # forms.SelfHandlingForm doesn't pass request object as the first argument
-    # to the class __init__ method, which causes form to explode.
-    @classmethod
-    def _instantiate(cls, request, *args, **kwargs):
-        return cls(request, *args, **kwargs)
-
     def __init__(self, request, *args, **kwargs):
-        super(DownloadX509Credentials, self).__init__(*args, **kwargs)
+        super(DownloadX509Credentials, self).__init__(request, *args, **kwargs)
         # Populate tenant choices
         tenant_choices = []
         try:
@@ -58,14 +53,35 @@ class DownloadX509Credentials(forms.SelfHandlingForm):
             self.fields['tenant'].choices = tenant_choices
 
     def handle(self, request, data):
+        def find_or_create_access_keys(request, tenant_id):
+            keys = api.keystone.list_ec2_credentials(request, request.user.id)
+            for key in keys:
+                if key.tenant_id == tenant_id:
+                    return key
+            return api.keystone.create_ec2_credentials(request,
+                                                       request.user.id,
+                                                       tenant_id)
         try:
+            # NOTE(jakedahn): Keystone errors unless we specifically scope
+            #                 the token to tenant before making the call.
+            api.keystone.token_create_scoped(request,
+                                             data.get('tenant'),
+                                             request.user.token.id)
             credentials = api.nova.get_x509_credentials(request)
             cacert = api.nova.get_x509_root_certificate(request)
-            access_secret = api.keystone.create_ec2_credentials(request,
-                                         request.user.id, data.get('tenant'))
-            context = {'ec2_access_key': access_secret.access,
-                       'ec2_secret_key': access_secret.secret,
-                       'ec2_endpoint': api.url_for(request, 'identity')}
+            keys = find_or_create_access_keys(request, data.get('tenant'))
+            context = {'ec2_access_key': keys.access,
+                       'ec2_secret_key': keys.secret,
+                       'ec2_endpoint': api.url_for(request,
+                                                   'ec2',
+                                                   endpoint_type='publicURL')}
+            try:
+                s3_endpoint = api.url_for(request,
+                                          's3',
+                                          endpoint_type='publicURL')
+            except exceptions.ServiceCatalogException:
+                s3_endpoint = None
+            context['s3_endpoint'] = s3_endpoint
         except:
             exceptions.handle(request,
                               _('Unable to fetch EC2 credentials.'),
@@ -73,7 +89,7 @@ class DownloadX509Credentials(forms.SelfHandlingForm):
 
         try:
             temp_zip = tempfile.NamedTemporaryFile(delete=True)
-            with zipfile.ZipFile(temp_zip.name, mode='w') as archive:
+            with closing(zipfile.ZipFile(temp_zip.name, mode='w')) as archive:
                 archive.writestr('pk.pem', credentials.private_key)
                 archive.writestr('cert.pem', credentials.data)
                 archive.writestr('cacert.pem', cacert.data)
