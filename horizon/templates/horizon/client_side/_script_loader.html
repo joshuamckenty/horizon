@@ -19,13 +19,13 @@
   }
 </script>
 
+{% if HORIZON_CONFIG.feedback_url %}
 <!-- UserVoice JavaScript SDK (only needed once on a page) -->
-<!-- TODO(JMC): Only show this if users have opted-in -->
 <script>(function(){
     var uv=document.createElement('script');
     uv.type='text/javascript';
     uv.async=true;
-    uv.src='//widget.uservoice.com/DFuEhNmp0fePOb36rvI77Q.js';
+    uv.src='{{ HORIZON_CONFIG.feedback_url }}';
     var s=document.getElementsByTagName('script')[0];
     s.parentNode.insertBefore(uv,s);
 })()</script>
@@ -35,12 +35,14 @@
 UserVoice = window.UserVoice || [];
 UserVoice.push(['showTab', 'classic_widget', {
   mode: 'feedback',
-  primary_color: '#cc6d00',
+  primary_color: '#2e3438',
   link_color: '#007dbf',
-  forum_id: 196605,
-  tab_label: 'Feedback',
-  tab_color: '#cc6d00',
-  tab_position: 'middle-right',
+  forum_id: 172128,
+  feedback_tab_name: 'Beta Feedback',
+  tab_label: 'Beta Feedback',
+  tab_color: '#4ec5cb',
+  tab_position: 'bottom-right',
   tab_inverted: false
 }]);
 </script>
+{% endif %}
