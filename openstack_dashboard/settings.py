@@ -56,6 +56,7 @@ HORIZON_CONFIG = {
     'user_home': 'horizon.views.base.get_user_home',
     'ajax_queue_limit': 10,
     'help_url': "http://docs.openstack.org",
+    'feedback_url': "//widget.uservoice.com/DFuEhNmp0fePOb36rvI77Q.js"
     'exceptions': {'recoverable': exceptions.RECOVERABLE,
                    'not_found': exceptions.NOT_FOUND,
                    'unauthorized': exceptions.UNAUTHORIZED},
